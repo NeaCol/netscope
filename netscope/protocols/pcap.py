@@ -42,6 +42,8 @@ def read_pcap(stream_or_path: Union[str, bytes, BinaryIO]) -> Generator[Tuple[fl
         if len(pkt_hdr) < 16:
             break
         ts_sec, ts_usec, incl_len, orig_len = struct.unpack(hdr_fmt, pkt_hdr)
+        if incl_len <= 0 or incl_len > 262144:
+            break
         data = stream.read(incl_len)
         if len(data) < incl_len:
             break
@@ -126,8 +128,8 @@ def generate_educational_pcap() -> bytes:
         client_mac
         + gw_mac
         + b"\x08\x00"
-        + struct.pack("!BBHHHBBH4s4s", 0x45, 0, 73, 0x9002, 0x4000, 56, 17, 0, b"\x01\x01\x01\x01", b"\xc0\xa8\x01\x32")
-        + struct.pack("!HHHH", 53, 53421, 53, 0)
+        + struct.pack("!BBHHHBBH4s4s", 0x45, 0, 74, 0x9002, 0x4000, 56, 17, 0, b"\x01\x01\x01\x01", b"\xc0\xa8\x01\x32")
+        + struct.pack("!HHHH", 53, 53421, 54, 0)
         + struct.pack("!HHHHHH", 0x7A12, 0x8180, 1, 1, 0, 0)
         + b"\x08netscope\x03dev\x00"
         + struct.pack("!HH", 1, 1)

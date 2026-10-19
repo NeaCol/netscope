@@ -97,3 +97,55 @@ class TestProtocols(unittest.TestCase):
         self.assertEqual(answers[0].record_type, "A")
         self.assertEqual(answers[0].data, "93.184.216.34")
         self.assertEqual(answers[0].ttl, 300)
+
+    def test_dns_compression_loop_protection(self):
+        from netscope.protocols.dissector import parse_dns_name
+        loop_data = b"\x00" * 12 + b"\xc0\x0c"
+        name, consumed = parse_dns_name(loop_data, 12)
+        self.assertIsInstance(name, str)
+        self.assertGreater(consumed, 0)
+
+    def test_dissect_ipv6_udp_dns(self):
+        import struct
+        ipv6_hdr = struct.pack("!IHBB16s16s", 0x60000000, 36, 17, 64, b"\x20\x01\x0d\xb8" * 4, b"\x20\x01\x48\x60" * 4)
+        udp_hdr = struct.pack("!HHHH", 53421, 53, 36, 0)
+        dns_data = struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + b"\x06google\x03com\x00" + struct.pack("!HH", 1, 1)
+        raw = b"\x00" * 12 + b"\x86\xdd" + ipv6_hdr + udp_hdr + dns_data
+        pkt = dissect_packet(raw)
+        self.assertIn("DNS Query", pkt.summary)
+        layer_names = [l.name for l in pkt.layers]
+        self.assertTrue(any("IPv6" in n for n in layer_names))
+        self.assertTrue(any("UDP" in n for n in layer_names))
+        self.assertTrue(any("DNS" in n for n in layer_names))
+
+    def test_dissect_ipv6_icmpv6(self):
+        import struct
+        icmp6 = struct.pack("!BBH", 128, 0, 0) + b"\x12\x34\x00\x01" + b"ping"
+        ipv6_hdr = struct.pack("!IHBB16s16s", 0x60000000, len(icmp6), 58, 64, b"\x20\x01\x0d\xb8" * 4, b"\x20\x01\x48\x60" * 4)
+        raw = b"\x00" * 12 + b"\x86\xdd" + ipv6_hdr + icmp6
+        pkt = dissect_packet(raw)
+        self.assertIn("ICMPv6", pkt.summary)
+        self.assertTrue(any("ICMPv6" in l.name for l in pkt.layers))
+
+    def test_dissect_malformed_ipv4_ihl(self):
+        raw = b"\x00" * 12 + b"\x08\x00" + b"\x41" + b"\x00" * 19
+        pkt = dissect_packet(raw)
+        self.assertIn("Malformed IPv4", pkt.summary)
+
+    def test_dns_response_answer_dissection(self):
+        pkts = parse_pcap_packets(generate_educational_pcap())
+        resp_pkt = pkts[3]
+        self.assertIn("93.142.18.52", resp_pkt.summary)
+        dns_layer = next(l for l in resp_pkt.layers if "DNS" in l.name)
+        self.assertIn("Answers", dns_layer.fields)
+        self.assertIn("93.142.18.52", dns_layer.fields["Answers"])
+
+    def test_pcap_corrupt_length_guard(self):
+        import struct
+        buf = io.BytesIO()
+        buf.write(struct.pack("!IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1))
+        buf.write(struct.pack("!IIII", 1000, 0, 2000000, 2000000))
+        buf.write(b"ABC")
+        buf.seek(0)
+        packets = list(read_pcap(buf))
+        self.assertEqual(len(packets), 0)

@@ -63,3 +63,10 @@ class TestAnalyzer(unittest.TestCase):
         link_types = {l.link_type for l in graph.links}
         self.assertIn("wan_uplink", link_types)
         self.assertIn("lan_link", link_types)
+
+    def test_traceroute_nonexistent_host(self):
+        from netscope.analyzer.latency import run_traceroute
+        hops = run_traceroute("non-existent-target-test-123.invalid", max_hops=2, timeout_per_hop=0.2)
+        # Should NOT return fake hops (192.168.1.1 or 14.5ms)
+        fake_hops = [h for h in hops if h.ip == "192.168.1.1" and h.rtt_ms == 1.2]
+        self.assertEqual(len(fake_hops), 0)

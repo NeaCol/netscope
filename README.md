@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-38%20passed-brightgreen.svg)]()
+[![Tests Passing](https://img.shields.io/badge/tests-52%20passed-brightgreen.svg)]()
 [![Code Style](https://img.shields.io/badge/design-taste--anti--slop-warmstone.svg)]()
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
 
@@ -23,7 +23,7 @@ netscope/
 │   ├── discovery.py   # Subnet host discovery sweep & hardware OUI resolution
 │   └── ports.py       # TCP connection probing & service detection
 ├── protocols/         # Protocol parsing & network capture processing
-│   ├── dissector.py   # Multi-layer packet dissector (L2 through L7)
+│   ├── dissector.py   # Multi-layer packet dissector (L2 through L7, IPv4 & IPv6)
 │   ├── pcap.py        # Libpcap 2.4 reader/writer & synthetic educational generator
 │   └── dns.py         # RFC 1035 query builder & multi-resolver benchmark engine
 ├── analyzer/          # Telemetry, traffic statistics & topological graph generation
@@ -31,7 +31,7 @@ netscope/
 │   ├── traffic.py     # Conversation aggregation & protocol distribution
 │   └── topology.py    # Hierarchical graph generator (WAN -> Gateway -> Hosts)
 ├── cli/               # Command-line interface with table and JSON formatting
-│   └── main.py        # Subcommands: interfaces, scan, dns, ping, trace, pcap, serve
+│   └── main.py        # Subcommands: interfaces, scan, ports, dns, ping, trace, pcap, topology, serve
 └── dashboard/         # Self-hosted anti-slop web dashboard
     ├── server.py      # FastAPI / Uvicorn REST backend and static file server
     └── static/        # Zero-telemetry frontend (Jost typography, SVG topology, inspector)
@@ -109,6 +109,11 @@ netscope interfaces
 netscope scan --subnet 192.168.1.0/24 --threads 40
 ```
 
+### Audit Open Ports on Host
+```bash
+netscope ports 192.168.1.1 -p 80,443,22,53
+```
+
 ### Benchmark DNS Resolvers
 ```bash
 netscope dns cloudflare.com --benchmark
@@ -155,7 +160,7 @@ Visit `http://127.0.0.1:8080` in any modern browser.
 
 ## Running the Test Suite
 
-The repository includes a comprehensive 38-test unit and integration test suite:
+The repository includes a comprehensive 52-test unit and integration test suite:
 
 ```bash
 pytest tests -v
@@ -164,15 +169,15 @@ pytest tests -v
 Output:
 ```
 ============================= test session starts =============================
-collected 38 items
+collected 52 items
 
-tests/test_analyzer.py ........                                          [ 18%]
-tests/test_cli.py ......                                                 [ 34%]
-tests/test_dashboard_api.py .........                                    [ 57%]
-tests/test_protocols.py ..........                                       [ 81%]
-tests/test_scanner.py .......                                            [100%]
+tests/test_analyzer.py ........                                          [ 15%]
+tests/test_cli.py ........                                               [ 30%]
+tests/test_dashboard_api.py ............                                  [ 53%]
+tests/test_protocols.py ................                                 [ 84%]
+tests/test_scanner.py ........                                           [100%]
 
-======================= 38 passed, 1 warning in 22.18s ========================
+======================= 52 passed, 1 warning in 2.38s =========================
 ```
 
 ---

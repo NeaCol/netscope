@@ -53,28 +53,62 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  let currentFilter = "all";
+
+  const btnFilterAll = document.getElementById("btn-filter-all");
+  const btnFilterHosts = document.getElementById("btn-filter-hosts");
+
+  if (btnFilterAll) {
+    btnFilterAll.addEventListener("click", () => {
+      currentFilter = "all";
+      btnFilterAll.classList.add("button-primary");
+      btnFilterAll.classList.remove("button-secondary");
+      btnFilterHosts.classList.add("button-secondary");
+      btnFilterHosts.classList.remove("button-primary");
+      if (topologyData) renderTopology(topologyData);
+    });
+  }
+
+  if (btnFilterHosts) {
+    btnFilterHosts.addEventListener("click", () => {
+      currentFilter = "hosts";
+      btnFilterHosts.classList.add("button-primary");
+      btnFilterHosts.classList.remove("button-secondary");
+      btnFilterAll.classList.add("button-secondary");
+      btnFilterAll.classList.remove("button-primary");
+      if (topologyData) renderTopology(topologyData);
+    });
+  }
+
   function renderTopology(graph) {
     const svg = document.getElementById("topology-svg");
     svg.innerHTML = "";
     if (!graph || !graph.nodes || graph.nodes.length === 0) return;
 
-    const width = 800;
-    const height = 520;
+    let activeNodes = graph.nodes;
+    if (currentFilter === "hosts") {
+      activeNodes = graph.nodes.filter((n) => n.node_type !== "wan");
+    }
 
-    const nodePositions = {};
-    const wanNode = graph.nodes.find((n) => n.node_type === "wan") || graph.nodes[0];
-    const gwNode = graph.nodes.find((n) => n.node_type === "gateway") || graph.nodes[1];
-    const localNode = graph.nodes.find((n) => n.node_type === "local_host");
-    const otherHosts = graph.nodes.filter((n) => n !== wanNode && n !== gwNode && n !== localNode);
+    const wanNode = currentFilter === "all" ? activeNodes.find((n) => n.node_type === "wan") : null;
+    const gwNode = activeNodes.find((n) => n.node_type === "gateway");
+    const localNode = activeNodes.find((n) => n.node_type === "local_host");
+    const otherHosts = activeNodes.filter((n) => n !== wanNode && n !== gwNode && n !== localNode);
 
-    if (wanNode) nodePositions[wanNode.id] = { x: width / 2, y: 70, node: wanNode };
-    if (gwNode) nodePositions[gwNode.id] = { x: width / 2, y: 200, node: gwNode };
-
-    const hostTierY = 380;
     const allTier2 = [];
     if (localNode) allTier2.push(localNode);
     allTier2.push(...otherHosts);
 
+    const minWidth = 800;
+    const width = Math.max(minWidth, (allTier2.length + 1) * 95);
+    const height = 520;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+    const nodePositions = {};
+    if (wanNode) nodePositions[wanNode.id] = { x: width / 2, y: 70, node: wanNode };
+    if (gwNode) nodePositions[gwNode.id] = { x: width / 2, y: wanNode ? 200 : 120, node: gwNode };
+
+    const hostTierY = 380;
     const stepX = width / (allTier2.length + 1);
     allTier2.forEach((h, idx) => {
       nodePositions[h.id] = {
@@ -132,7 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
       labelText.setAttribute("text-anchor", "middle");
       labelText.setAttribute("fill", "#6b6763");
       labelText.setAttribute("font-size", "11");
-      labelText.textContent = item.node.vendor.slice(0, 16);
+      labelText.textContent = (item.node.vendor || "").slice(0, 16);
       g.appendChild(labelText);
 
       g.addEventListener("click", () => {
@@ -157,8 +191,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   document.getElementById("btn-scan-selected-node").addEventListener("click", async () => {
-    if (!selectedNode || !selectedNode.ip || selectedNode.ip === "0.0.0.0") return;
     const output = document.getElementById("inspect-ports-output");
+    if (!selectedNode || !selectedNode.ip || selectedNode.ip === "0.0.0.0") {
+      output.textContent = "Select a local host or gateway to audit ports.";
+      return;
+    }
     output.textContent = `Probing ports on ${selectedNode.ip}...`;
     try {
       const res = await fetch(`/api/ports?host=${encodeURIComponent(selectedNode.ip)}`);
@@ -370,6 +407,11 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ hex_data: hex }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert("Decode failed: " + (err.detail || `HTTP ${res.status}`));
+        return;
+      }
       const pkt = await res.json();
       loadedPackets = [pkt];
       renderPacketPills(loadedPackets);

@@ -94,6 +94,8 @@ def scan_host_ports(host: str, ports: Optional[str] = None) -> List[Dict[str, An
     if ports:
         try:
             target_ports = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]
+            if len(target_ports) > 100:
+                raise HTTPException(status_code=400, detail="Maximum 100 ports allowed per scan request")
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid ports parameter")
     results = scan_ports(host=host, ports=target_ports)
@@ -137,17 +139,24 @@ def analyze_packet_payload(req: RawPacketRequest) -> Dict[str, Any]:
     raw_bytes = b""
     if req.hex_data:
         clean = "".join(req.hex_data.split())
+        if len(clean) > 131072:
+            raise HTTPException(status_code=400, detail="Payload exceeds maximum 65536 bytes")
         try:
             raw_bytes = bytes.fromhex(clean)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid hex string")
     elif req.base64_data:
+        if len(req.base64_data) > 88000:
+            raise HTTPException(status_code=400, detail="Payload exceeds maximum 65536 bytes")
         try:
             raw_bytes = base64.b64decode(req.base64_data)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid base64 payload")
     else:
         raise HTTPException(status_code=400, detail="Provide hex_data or base64_data")
+
+    if len(raw_bytes) > 65536:
+        raise HTTPException(status_code=400, detail="Frame size exceeds 65536 bytes limit")
 
     pkt = dissect_packet(raw_bytes)
     return pkt.to_dict()

@@ -52,20 +52,37 @@ def build_network_topology(discovered: Optional[List[DiscoveredHost]] = None, sc
         if scan:
             discovered = scan_subnet(cidr=cidr)
         else:
+            import ipaddress
             from netscope.scanner.discovery import lookup_vendor, read_system_arp_table
             arp_table = read_system_arp_table()
             discovered = []
+            target_network = None
+            if cidr:
+                try:
+                    target_network = ipaddress.IPv4Network(cidr, strict=False)
+                except ValueError:
+                    pass
+
             for ip, mac in arp_table.items():
-                if ip not in (gw_ip, local_ip):
-                    discovered.append(
-                        DiscoveredHost(
-                            ip=ip,
-                            mac=mac,
-                            vendor=lookup_vendor(mac),
-                            response_time_ms=1.0,
-                            status="online",
-                        )
+                if ip in (gw_ip, local_ip):
+                    continue
+                try:
+                    ip_obj = ipaddress.IPv4Address(ip)
+                    if ip_obj.is_multicast or ip_obj.is_loopback or ip_obj.is_link_local:
+                        continue
+                    if target_network and ip_obj not in target_network:
+                        continue
+                except ValueError:
+                    continue
+                discovered.append(
+                    DiscoveredHost(
+                        ip=ip,
+                        mac=mac,
+                        vendor=lookup_vendor(mac),
+                        response_time_ms=1.0,
+                        status="online",
                     )
+                )
 
     nodes: List[TopologyNode] = []
     links: List[TopologyLink] = []

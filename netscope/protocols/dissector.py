@@ -57,8 +57,12 @@ def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
     original_offset = offset
     jumped = False
     bytes_consumed = 0
+    visited_offsets = set()
 
     while offset < len(data):
+        if offset in visited_offsets or len(visited_offsets) > 20:
+            break
+        visited_offsets.add(offset)
         length = data[offset]
         if length == 0:
             if not jumped:
@@ -76,12 +80,20 @@ def parse_dns_name(data: bytes, offset: int) -> tuple[str, int]:
         offset += 1
         if not jumped:
             bytes_consumed += 1
+        if offset + length > len(data):
+            labels.append(data[offset:].decode("utf-8", errors="replace"))
+            if not jumped:
+                bytes_consumed += len(data) - offset
+            break
         labels.append(data[offset : offset + length].decode("utf-8", errors="replace"))
         offset += length
         if not jumped:
             bytes_consumed += length
 
-    return ".".join(labels), (bytes_consumed if jumped else (offset - original_offset + 1))
+    total_consumed = bytes_consumed if jumped else (offset - original_offset + 1)
+    if total_consumed <= 0:
+        total_consumed = min(1, len(data) - original_offset)
+    return ".".join(labels), total_consumed
 
 
 def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
@@ -149,6 +161,15 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
             version_ihl = payload[0]
             version = version_ihl >> 4
             ihl = (version_ihl & 0x0F) * 4
+            if ihl < 20 or ihl > len(payload):
+                return DissectedPacket(
+                    timestamp=timestamp,
+                    length=total_len,
+                    summary=f"Malformed IPv4 Packet (invalid IHL: {ihl})",
+                    layers=layers,
+                    hex_dump=format_hex_dump(raw_data),
+                    educational_notes=["IPv4 header length (IHL) is corrupted or out of packet bounds."],
+                )
             tos = payload[1]
             ip_total_length = struct.unpack("!H", payload[2:4])[0]
             ident = struct.unpack("!H", payload[4:6])[0]
@@ -196,102 +217,12 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
                 notes.append(f"TTL={ttl}: typical for network appliances/routers (initial default 255).")
 
             l4_data = payload[ihl:]
-
             if proto_num == 1 and len(l4_data) >= 8:
-                icmp_type, icmp_code, icmp_chk = struct.unpack("!BBH", l4_data[:4])
-                icmp_names = {
-                    0: "Echo Reply",
-                    3: "Destination Unreachable",
-                    8: "Echo Request",
-                    11: "Time Exceeded (TTL expired)",
-                }
-                type_name = icmp_names.get(icmp_type, f"Type {icmp_type}")
-                summary = f"ICMP {type_name} ({src_ip} -> {dst_ip})"
-
-                icmp_fields = {
-                    "Type": f"{icmp_type} ({type_name})",
-                    "Code": icmp_code,
-                    "Checksum": f"0x{icmp_chk:04x}",
-                }
-                if icmp_type in (0, 8) and len(l4_data) >= 8:
-                    ident, seq = struct.unpack("!HH", l4_data[4:8])
-                    icmp_fields["Identifier"] = ident
-                    icmp_fields["Sequence Number"] = seq
-
-                layers.append(
-                    PacketLayer(
-                        name="ICMP (Internet Control Message Protocol)",
-                        fields=icmp_fields,
-                        description="Network diagnostic and error reporting protocol.",
-                    )
-                )
-
+                summary = _dissect_icmp(l4_data, src_ip, dst_ip, layers, notes)
             elif proto_num == 6 and len(l4_data) >= 20:
-                src_port, dst_port, seq, ack, offset_reserved, flags, win, tcp_chk, urg = struct.unpack("!HHIIBBHHH", l4_data[:20])
-                tcp_hdr_len = (offset_reserved >> 4) * 4
-
-                flag_bits = {
-                    "URG": bool(flags & 0x20),
-                    "ACK": bool(flags & 0x10),
-                    "PSH": bool(flags & 0x08),
-                    "RST": bool(flags & 0x04),
-                    "SYN": bool(flags & 0x02),
-                    "FIN": bool(flags & 0x01),
-                }
-                active_flags = [k for k, v in flag_bits.items() if v]
-                flags_repr = ",".join(active_flags) if active_flags else "None"
-
-                summary = f"TCP {src_ip}:{src_port} -> {dst_ip}:{dst_port} [{flags_repr}] Seq={seq} Ack={ack}"
-
-                layers.append(
-                    PacketLayer(
-                        name="TCP (Transmission Control Protocol)",
-                        fields={
-                            "Source Port": src_port,
-                            "Destination Port": dst_port,
-                            "Sequence Number": seq,
-                            "Acknowledgment Number": ack,
-                            "Header Length": f"{tcp_hdr_len} bytes",
-                            "Flags": flags_repr,
-                            "Window Size": win,
-                            "Checksum": f"0x{tcp_chk:04x}",
-                            "Urgent Pointer": urg,
-                        },
-                        description="Connection-oriented, reliable transport layer with byte-stream ordering.",
-                    )
-                )
-
-                if flag_bits.get("SYN") and not flag_bits.get("ACK"):
-                    notes.append("TCP SYN: client is initiating 3-way handshake.")
-                elif flag_bits.get("SYN") and flag_bits.get("ACK"):
-                    notes.append("TCP SYN-ACK: server acknowledged client and accepted connection.")
-                elif flag_bits.get("RST"):
-                    notes.append("TCP RST: connection aborted or port is closed on remote host.")
-
-                app_data = l4_data[tcp_hdr_len:]
-                if app_data:
-                    _dissect_app_layer(app_data, src_port, dst_port, layers, notes)
-
+                summary = _dissect_tcp(l4_data, src_ip, dst_ip, layers, notes)
             elif proto_num == 17 and len(l4_data) >= 8:
-                src_port, dst_port, udp_len, udp_chk = struct.unpack("!HHHH", l4_data[:8])
-                summary = f"UDP {src_ip}:{src_port} -> {dst_ip}:{dst_port} Len={udp_len}"
-
-                layers.append(
-                    PacketLayer(
-                        name="UDP (User Datagram Protocol)",
-                        fields={
-                            "Source Port": src_port,
-                            "Destination Port": dst_port,
-                            "Length": udp_len,
-                            "Checksum": f"0x{udp_chk:04x}",
-                        },
-                        description="Lightweight, connectionless transport layer without retransmission overhead.",
-                    )
-                )
-
-                app_data = l4_data[8:]
-                if app_data:
-                    _dissect_app_layer(app_data, src_port, dst_port, layers, notes)
+                summary = _dissect_udp(l4_data, src_ip, dst_ip, layers, notes)
 
     elif ethertype == 0x86DD and len(payload) >= 40:
         v_tc_fl = struct.unpack("!I", payload[:4])[0]
@@ -317,6 +248,14 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
             )
         )
 
+        l4_data = payload[40:]
+        if next_hdr == 6 and len(l4_data) >= 20:
+            summary = _dissect_tcp(l4_data, src_ip6, dst_ip6, layers, notes)
+        elif next_hdr == 17 and len(l4_data) >= 8:
+            summary = _dissect_udp(l4_data, src_ip6, dst_ip6, layers, notes)
+        elif next_hdr == 58 and len(l4_data) >= 4:
+            summary = _dissect_icmpv6(l4_data, src_ip6, dst_ip6, layers, notes)
+
     preview = None
     if len(raw_data) > 14:
         sample = raw_data[14:78]
@@ -334,7 +273,153 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
     )
 
 
-def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[PacketLayer], notes: List[str]) -> None:
+def _dissect_icmp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
+    icmp_type, icmp_code, icmp_chk = struct.unpack("!BBH", l4_data[:4])
+    icmp_names = {
+        0: "Echo Reply",
+        3: "Destination Unreachable",
+        8: "Echo Request",
+        11: "Time Exceeded (TTL expired)",
+    }
+    type_name = icmp_names.get(icmp_type, f"Type {icmp_type}")
+    summary = f"ICMP {type_name} ({src_ip} -> {dst_ip})"
+
+    icmp_fields = {
+        "Type": f"{icmp_type} ({type_name})",
+        "Code": icmp_code,
+        "Checksum": f"0x{icmp_chk:04x}",
+    }
+    if icmp_type in (0, 8) and len(l4_data) >= 8:
+        ident, seq = struct.unpack("!HH", l4_data[4:8])
+        icmp_fields["Identifier"] = ident
+        icmp_fields["Sequence Number"] = seq
+
+    layers.append(
+        PacketLayer(
+            name="ICMP (Internet Control Message Protocol)",
+            fields=icmp_fields,
+            description="Network diagnostic and error reporting protocol.",
+        )
+    )
+    return summary
+
+
+def _dissect_icmpv6(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
+    icmp_type, icmp_code, icmp_chk = struct.unpack("!BBH", l4_data[:4])
+    icmpv6_names = {
+        1: "Destination Unreachable",
+        2: "Packet Too Big",
+        3: "Time Exceeded",
+        128: "Echo Request",
+        129: "Echo Reply",
+        133: "Router Solicitation",
+        134: "Router Advertisement",
+        135: "Neighbor Solicitation",
+        136: "Neighbor Advertisement",
+    }
+    type_name = icmpv6_names.get(icmp_type, f"Type {icmp_type}")
+    summary = f"ICMPv6 {type_name} ({src_ip} -> {dst_ip})"
+
+    icmp_fields = {
+        "Type": f"{icmp_type} ({type_name})",
+        "Code": icmp_code,
+        "Checksum": f"0x{icmp_chk:04x}",
+    }
+    if icmp_type in (128, 129) and len(l4_data) >= 8:
+        ident, seq = struct.unpack("!HH", l4_data[4:8])
+        icmp_fields["Identifier"] = ident
+        icmp_fields["Sequence Number"] = seq
+
+    layers.append(
+        PacketLayer(
+            name="ICMPv6 (Internet Control Message Protocol v6)",
+            fields=icmp_fields,
+            description="Control message protocol for IPv6, replacing IPv4 ARP and IGMP.",
+        )
+    )
+    return summary
+
+
+def _dissect_tcp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
+    src_port, dst_port, seq, ack, offset_reserved, flags, win, tcp_chk, urg = struct.unpack("!HHIIBBHHH", l4_data[:20])
+    tcp_hdr_len = (offset_reserved >> 4) * 4
+    if tcp_hdr_len < 20 or tcp_hdr_len > len(l4_data):
+        tcp_hdr_len = 20
+
+    flag_bits = {
+        "URG": bool(flags & 0x20),
+        "ACK": bool(flags & 0x10),
+        "PSH": bool(flags & 0x08),
+        "RST": bool(flags & 0x04),
+        "SYN": bool(flags & 0x02),
+        "FIN": bool(flags & 0x01),
+    }
+    active_flags = [k for k, v in flag_bits.items() if v]
+    flags_repr = ",".join(active_flags) if active_flags else "None"
+
+    summary = f"TCP {src_ip}:{src_port} -> {dst_ip}:{dst_port} [{flags_repr}] Seq={seq} Ack={ack}"
+
+    layers.append(
+        PacketLayer(
+            name="TCP (Transmission Control Protocol)",
+            fields={
+                "Source Port": src_port,
+                "Destination Port": dst_port,
+                "Sequence Number": seq,
+                "Acknowledgment Number": ack,
+                "Header Length": f"{tcp_hdr_len} bytes",
+                "Flags": flags_repr,
+                "Window Size": win,
+                "Checksum": f"0x{tcp_chk:04x}",
+                "Urgent Pointer": urg,
+            },
+            description="Connection-oriented, reliable transport layer with byte-stream ordering.",
+        )
+    )
+
+    if flag_bits.get("SYN") and not flag_bits.get("ACK"):
+        notes.append("TCP SYN: client is initiating 3-way handshake.")
+    elif flag_bits.get("SYN") and flag_bits.get("ACK"):
+        notes.append("TCP SYN-ACK: server acknowledged client and accepted connection.")
+    elif flag_bits.get("RST"):
+        notes.append("TCP RST: connection aborted or port is closed on remote host.")
+
+    app_data = l4_data[tcp_hdr_len:]
+    if app_data:
+        app_summary = _dissect_app_layer(app_data, src_port, dst_port, layers, notes)
+        if app_summary:
+            summary = app_summary
+
+    return summary
+
+
+def _dissect_udp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
+    src_port, dst_port, udp_len, udp_chk = struct.unpack("!HHHH", l4_data[:8])
+    summary = f"UDP {src_ip}:{src_port} -> {dst_ip}:{dst_port} Len={udp_len}"
+
+    layers.append(
+        PacketLayer(
+            name="UDP (User Datagram Protocol)",
+            fields={
+                "Source Port": src_port,
+                "Destination Port": dst_port,
+                "Length": udp_len,
+                "Checksum": f"0x{udp_chk:04x}",
+            },
+            description="Lightweight, connectionless transport layer without retransmission overhead.",
+        )
+    )
+
+    app_data = l4_data[8:udp_len] if 8 <= udp_len <= len(l4_data) else l4_data[8:]
+    if app_data:
+        app_summary = _dissect_app_layer(app_data, src_port, dst_port, layers, notes)
+        if app_summary:
+            summary = app_summary
+
+    return summary
+
+
+def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[PacketLayer], notes: List[str]) -> Optional[str]:
     if 53 in (src_port, dst_port) and len(data) >= 12:
         tx_id, flags, qdcount, ancount, nscount, arcount = struct.unpack("!HHHHHH", data[:12])
         is_response = bool(flags & 0x8000)
@@ -351,12 +436,40 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
         }
 
         q_name, offset = parse_dns_name(data, 12)
+        qtype_str = "A"
         if q_name:
             dns_fields["Query Domain"] = q_name
             if 12 + offset + 4 <= len(data):
                 qtype, qclass = struct.unpack("!HH", data[12 + offset : 12 + offset + 4])
                 type_map = {1: "A (IPv4)", 28: "AAAA (IPv6)", 15: "MX", 16: "TXT", 2: "NS", 5: "CNAME"}
-                dns_fields["Query Type"] = type_map.get(qtype, f"Type {qtype}")
+                qtype_str = type_map.get(qtype, f"Type {qtype}")
+                dns_fields["Query Type"] = qtype_str
+
+        answers_list: List[str] = []
+        if is_response and ancount > 0:
+            ans_offset = 12 + offset + 4
+            for _ in range(min(ancount, 6)):
+                if ans_offset >= len(data):
+                    break
+                _, a_consumed = parse_dns_name(data, ans_offset)
+                ans_offset += a_consumed
+                if ans_offset + 10 > len(data):
+                    break
+                a_type, a_cls, a_ttl, a_rdlen = struct.unpack("!HHIH", data[ans_offset : ans_offset + 10])
+                ans_offset += 10
+                a_rdata = data[ans_offset : ans_offset + a_rdlen]
+                ans_offset += a_rdlen
+                if a_type == 1 and a_rdlen == 4 and len(a_rdata) == 4:
+                    answers_list.append(socket.inet_ntoa(a_rdata))
+                elif a_type == 28 and a_rdlen == 16 and len(a_rdata) == 16:
+                    answers_list.append(socket.inet_ntop(socket.AF_INET6, a_rdata))
+                elif a_type in (2, 5, 12):
+                    cname, _ = parse_dns_name(data, ans_offset - a_rdlen)
+                    if cname:
+                        answers_list.append(cname)
+
+        if answers_list:
+            dns_fields["Answers"] = ", ".join(answers_list)
 
         layers.append(
             PacketLayer(
@@ -366,7 +479,11 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
             )
         )
         notes.append("DNS uses UDP for rapid resolution with low latency; falls back to TCP when responses exceed 512 bytes.")
-        return
+
+        if is_response:
+            ans_text = f" -> {', '.join(answers_list)}" if answers_list else ""
+            return f"DNS Response: {q_name or 'domain'}{ans_text}"
+        return f"DNS Query: {q_name or 'domain'} ({qtype_str})"
 
     if 80 in (src_port, dst_port) or 8080 in (src_port, dst_port):
         text = data.decode("utf-8", errors="ignore")
@@ -384,7 +501,7 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
                     description="Cleartext application protocol powering the World Wide Web.",
                 )
             )
-            return
+            return f"HTTP {first_line[:45]}"
 
     if 443 in (src_port, dst_port) or 8443 in (src_port, dst_port):
         if len(data) >= 5 and data[0] == 0x16:
@@ -395,8 +512,10 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
                 "TLS Version": f"0x{rec_ver:04x}",
                 "Length": f"{rec_len} bytes",
             }
+            summary_part = "Handshake"
             if len(data) >= 6 and data[5] == 0x01:
                 tls_fields["Handshake Type"] = "Client Hello (0x01)"
+                summary_part = "Client Hello"
                 notes.append("TLS Client Hello initiates encrypted negotiation, presenting supported ciphersuites and SNI.")
             layers.append(
                 PacketLayer(
@@ -405,3 +524,6 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
                     description="Cryptographic protocol providing end-to-end security and privacy.",
                 )
             )
+            return f"TLS {summary_part}"
+
+    return None

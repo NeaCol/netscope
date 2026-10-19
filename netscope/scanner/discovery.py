@@ -31,11 +31,51 @@ OUI_PREFIXES: Dict[str, str] = {
     "AC:DE:48": "Apple",
     "F4:D4:88": "Apple",
     "BC:D0:74": "Apple",
+    "2C:EC:F7": "Apple",
+    "44:D8:78": "Apple",
+    "3C:22:FB": "Apple",
+    "A4:83:E7": "Apple",
+    "68:FE:F7": "Apple",
+    "18:65:90": "Apple",
+    "AC:BC:32": "Apple",
+    "D8:57:EF": "Samsung",
+    "50:01:D9": "Samsung",
+    "00:12:FB": "Samsung",
+    "34:23:87": "Samsung",
+    "88:36:5F": "Samsung",
+    "64:1C:AE": "Samsung",
+    "28:56:3A": "Xiaomi / Tuya",
+    "78:11:DC": "Xiaomi",
+    "64:90:C1": "Xiaomi",
+    "50:EC:50": "Xiaomi",
+    "60:45:E8": "Espressif Inc.",
+    "24:62:AB": "Espressif Inc.",
+    "84:F3:EB": "Espressif Inc.",
+    "EC:62:60": "Espressif Inc.",
+    "48:55:19": "Espressif Inc.",
+    "00:E0:4C": "Realtek",
+    "54:EE:75": "Realtek",
+    "00:26:18": "Realtek",
+    "00:1B:78": "HP",
+    "3C:D9:2B": "HP",
+    "9C:8E:99": "HP",
+    "00:1E:10": "Huawei",
+    "00:25:9E": "Huawei",
+    "00:46:4B": "Huawei",
+    "70:72:0D": "Huawei",
+    "00:04:1F": "Sony",
+    "00:13:A9": "Sony",
+    "F8:46:1C": "Sony",
+    "00:1C:62": "LG Electronics",
+    "00:1F:6B": "LG Electronics",
     "00:14:22": "Dell",
     "F8:DB:88": "Dell",
     "00:25:90": "Supermicro",
     "00:1B:21": "Intel",
     "A4:4C:C8": "Intel",
+    "00:1E:67": "Intel",
+    "00:15:00": "Intel",
+    "34:13:E8": "Intel",
     "00:04:96": "Extreme Networks",
     "00:1F:6D": "Cisco",
     "00:26:0B": "Cisco",
@@ -93,22 +133,31 @@ def read_system_arp_table() -> Dict[str, str]:
             if match:
                 ip_found = match.group(1)
                 mac_found = match.group(2).replace("-", ":").upper()
-                if not mac_found.startswith("FF:FF:FF") and not ip_found.startswith("224.") and not ip_found.endswith(".255"):
+                try:
+                    addr = ipaddress.IPv4Address(ip_found)
+                    if addr.is_multicast or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified:
+                        continue
+                    if mac_found.startswith("FF:FF:FF") or mac_found.startswith("01:00:5E") or mac_found.startswith("33:33"):
+                        continue
+                    if ip_found.endswith(".255"):
+                        continue
                     table[ip_found] = mac_found
+                except ValueError:
+                    continue
     except Exception:
         pass
     return table
 
 
-def probe_single_host(ip: str, timeout: float = 0.25) -> tuple[str, bool, float]:
+def probe_single_host(ip: str, timeout: float = 0.15) -> tuple[str, bool, float]:
     start = time.perf_counter()
-    target_ports = [80, 443, 22, 445, 135, 53, 8080]
+    target_ports = [80, 445, 135, 443]
     for port in target_ports:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(timeout)
                 res = s.connect_ex((ip, port))
-                if res == 0:
+                if res in (0, 10061, 111):
                     elapsed = (time.perf_counter() - start) * 1000.0
                     return ip, True, elapsed
         except Exception:
@@ -117,15 +166,17 @@ def probe_single_host(ip: str, timeout: float = 0.25) -> tuple[str, bool, float]
     return ip, False, elapsed
 
 
-def resolve_hostname(ip: str) -> Optional[str]:
+def resolve_hostname(ip: str, timeout: float = 0.6) -> Optional[str]:
     try:
-        name, _, _ = socket.gethostbyaddr(ip)
-        return name
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(socket.gethostbyaddr, ip)
+            name, _, _ = future.result(timeout=timeout)
+            return name
     except Exception:
         return None
 
 
-def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: float = 0.3) -> List[DiscoveredHost]:
+def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: float = 0.15) -> List[DiscoveredHost]:
     gateway_ip, local_ip = get_default_gateway_and_ip()
     primary = get_primary_interface()
 
@@ -145,11 +196,22 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
     arp_table = read_system_arp_table()
     hosts_to_probe: List[str] = []
 
-    for host in network.hosts():
-        ip_str = str(host)
-        hosts_to_probe.append(ip_str)
-        if len(hosts_to_probe) >= 254:
-            break
+    if network.num_addresses > 256 and local_ip:
+        try:
+            local_addr = ipaddress.IPv4Address(local_ip)
+            if local_addr in network:
+                octs = local_ip.split(".")
+                slice_net = ipaddress.IPv4Network(f"{octs[0]}.{octs[1]}.{octs[2]}.0/24", strict=False)
+                for h in slice_net.hosts():
+                    hosts_to_probe.append(str(h))
+        except ValueError:
+            pass
+
+    if not hosts_to_probe:
+        for host in network.hosts():
+            hosts_to_probe.append(str(host))
+            if len(hosts_to_probe) >= 254:
+                break
 
     active_ips: Dict[str, float] = {}
 
@@ -172,6 +234,17 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
     if gateway_ip and gateway_ip not in active_ips:
         active_ips[gateway_ip] = 1.2
 
+    hostnames: Dict[str, Optional[str]] = {}
+    if active_ips:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(active_ips))) as ex:
+            futures_names = {ex.submit(resolve_hostname, ip, 0.6): ip for ip in active_ips.keys()}
+            for f in concurrent.futures.as_completed(futures_names):
+                target_ip = futures_names[f]
+                try:
+                    hostnames[target_ip] = f.result()
+                except Exception:
+                    hostnames[target_ip] = None
+
     results: List[DiscoveredHost] = []
 
     for ip, rtt in sorted(active_ips.items(), key=lambda x: ipaddress.IPv4Address(x[0])):
@@ -182,7 +255,7 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
         vendor = lookup_vendor(mac)
         is_gw = bool(gateway_ip and ip == gateway_ip)
         is_loc = bool(local_ip and ip == local_ip)
-        hostname = resolve_hostname(ip)
+        hostname = hostnames.get(ip)
 
         results.append(
             DiscoveredHost(

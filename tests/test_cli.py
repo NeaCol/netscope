@@ -56,3 +56,17 @@ class TestCLI(unittest.TestCase):
         with redirect_stdout(f):
             code = main([])
         self.assertEqual(code, 1)
+
+    def test_cli_ports_json(self):
+        f = io.StringIO()
+        with redirect_stdout(f):
+            code = main(["ports", "127.0.0.1", "-p", "65530", "--json"])
+        self.assertEqual(code, 0)
+        data = json.loads(f.getvalue())
+        self.assertIsInstance(data, list)
+
+    def test_cli_trace_unreachable(self):
+        f = io.StringIO()
+        with redirect_stdout(f):
+            code = main(["trace", "non-existent-target-test-123.invalid", "--max-hops", "1"])
+        self.assertEqual(code, 0)

@@ -66,3 +66,19 @@ class TestDashboardAPI(unittest.TestCase):
     def test_api_analyze_packet_invalid_hex(self):
         res = self.client.post("/api/analyze-packet", json={"hex_data": "not-valid-hex-zzz"})
         self.assertEqual(res.status_code, 400)
+
+    def test_api_ports_limit(self):
+        many_ports = ",".join(str(i) for i in range(1, 105))
+        res = self.client.get(f"/api/ports?host=127.0.0.1&ports={many_ports}")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Maximum 100 ports", res.json()["detail"])
+
+    def test_api_analyze_packet_oversized(self):
+        oversized_hex = "00" * 70000
+        res = self.client.post("/api/analyze-packet", json={"hex_data": oversized_hex})
+        self.assertEqual(res.status_code, 400)
+
+    def test_api_trace(self):
+        res = self.client.get("/api/trace?target=127.0.0.1&max_hops=2")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsInstance(res.json(), list)

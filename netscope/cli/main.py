@@ -10,6 +10,7 @@ from netscope.protocols.dns import benchmark_resolvers, query_dns
 from netscope.protocols.pcap import generate_educational_pcap, parse_pcap_packets
 from netscope.scanner.discovery import scan_subnet
 from netscope.scanner.interfaces import list_interfaces
+from netscope.scanner.ports import scan_ports
 
 
 def print_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -135,9 +136,40 @@ def cmd_trace(args: argparse.Namespace) -> int:
         print(json.dumps([h.to_dict() for h in hops], indent=2))
         return 0
 
+    if not hops:
+        print(f"\nTrace to {args.target} completed: no responsive hops or host unreachable.")
+        return 0
+
     headers = ["Hop", "IP Address", "RTT (ms)", "Status"]
     rows = [[str(h.hop), h.ip or "*", f"{h.rtt_ms:.1f}" if h.rtt_ms else "*", h.status] for h in hops]
     print()
+    print_table(headers, rows)
+    return 0
+
+
+def cmd_ports(args: argparse.Namespace) -> int:
+    target_ports = None
+    if args.ports:
+        try:
+            target_ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
+        except ValueError:
+            print("Invalid port list format. Use e.g. 80,443,22")
+            return 1
+
+    if not args.json:
+        print(f"Scanning service ports on {args.host}...")
+    results = scan_ports(host=args.host, ports=target_ports)
+    if args.json:
+        print(json.dumps([p.to_dict() for p in results], indent=2))
+        return 0
+
+    if not results:
+        print(f"\nNo open ports detected on {args.host}.")
+        return 0
+
+    headers = ["Port", "Service", "State", "Banner"]
+    rows = [[str(p.port), p.service, "OPEN", (p.banner or "-")[:30]] for p in results]
+    print(f"\nDiscovered {len(results)} open port(s) on {args.host}:\n")
     print_table(headers, rows)
     return 0
 
@@ -240,6 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--threads", type=int, default=40, help="Concurrent probe threads")
     p_scan.add_argument("--json", action="store_true", help="Output JSON format")
     p_scan.set_defaults(func=cmd_scan)
+
+    p_ports = subparsers.add_parser("ports", help="Audit open TCP service ports on target host")
+    p_ports.add_argument("host", type=str, help="Target IP or hostname")
+    p_ports.add_argument("-p", "--ports", type=str, help="Comma-separated ports (e.g. 80,443,22)")
+    p_ports.add_argument("--json", action="store_true", help="Output JSON format")
+    p_ports.set_defaults(func=cmd_ports)
 
     p_dns = subparsers.add_parser("dns", help="Analyze DNS records and benchmark resolvers")
     p_dns.add_argument("domain", type=str, help="Domain name to resolve")

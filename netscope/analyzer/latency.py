@@ -146,7 +146,11 @@ def run_traceroute(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5
             cmd = ["traceroute", "-n", "-m", str(max_hops), "-w", str(int(timeout_per_hop)), target]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        out, _ = proc.communicate(timeout=max_hops * timeout_per_hop + 5)
+        try:
+            out, _ = proc.communicate(timeout=max_hops * timeout_per_hop + 5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
 
         for line in out.splitlines():
             line = line.strip()
@@ -178,9 +182,5 @@ def run_traceroute(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5
                 break
     except Exception:
         pass
-
-    if not hops:
-        hops.append(TracerouteHop(hop=1, ip="192.168.1.1", hostname="gateway", rtt_ms=1.2, status="active"))
-        hops.append(TracerouteHop(hop=2, ip=target, hostname=target, rtt_ms=14.5, status="active"))
 
     return hops

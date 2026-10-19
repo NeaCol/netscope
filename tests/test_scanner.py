@@ -47,3 +47,17 @@ class TestScanner(unittest.TestCase):
     def test_scan_ports_empty(self):
         res = scan_ports("127.0.0.1", ports=[65531, 65532], timeout=0.1)
         self.assertIsInstance(res, list)
+
+    def test_lookup_vendor_expanded(self):
+        self.assertEqual(lookup_vendor("2C:EC:F7:11:22:33"), "Apple")
+        self.assertEqual(lookup_vendor("28:56:3A:AA:BB:CC"), "Xiaomi / Tuya")
+        self.assertEqual(lookup_vendor("60:45:E8:12:34:56"), "Espressif Inc.")
+        self.assertEqual(lookup_vendor("D8:57:EF:00:11:22"), "Samsung")
+
+    def test_read_arp_table_filters_multicast(self):
+        from netscope.scanner.discovery import read_system_arp_table
+        table = read_system_arp_table()
+        self.assertNotIn("239.255.255.250", table)
+        for ip, mac in table.items():
+            self.assertFalse(mac.startswith("01:00:5E"))
+            self.assertFalse(mac.startswith("FF:FF:FF"))
