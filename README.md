@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests Passing](https://img.shields.io/badge/tests-52%20passed-brightgreen.svg)]()
-[![Code Style](https://img.shields.io/badge/design-taste--anti--slop-warmstone.svg)]()
+[![Code Style: Clean](https://img.shields.io/badge/code%20style-clean%20%26%20typed-black.svg)]()
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
 
 > **Educational Network Diagnostic Workbench & Topology Visualizer**
@@ -65,16 +65,6 @@ netscope/
 - Scans user-specified CIDR blocks (e.g. `192.168.1.0/24`) combining ARP tables and multi-threaded socket probing.
 - Automatic IEEE OUI manufacturer resolution (Apple, Intel, Raspberry Pi, Cisco, Dell, Espressif, Ubiquiti, etc.).
 - Deep inspection of host interfaces: status, IPv4/IPv6, MAC, MTU, operational link speed, and default routing table entries.
-
----
-
-## Anti-Slop Dashboard Design
-
-The web interface is built according to strict **anti-slop** design criteria (`design-taste-frontend`):
-- **Typography:** Set exclusively in Jost with strict typographic hierarchy and tabular figures.
-- **Palette:** Warm stone ground (`#eeecea`), layered surface steps (`#e4e1dd`, `#cdc3b6`), deep charcoal ink (`#1f1e1d`), and muted sage accent (`#4a5743`).
-- **No Ornaments:** Zero gradients, zero artificial shadows at rest, no generic card rows, and no AI boilerplate pills.
-- **Full Contrast:** Built to meet WCAG AAA standards on desktop, tablet, and mobile viewports.
 
 ---
 
