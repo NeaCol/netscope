@@ -77,9 +77,14 @@ def icmp_ping_single(host: str, timeout: int = 1000) -> Optional[float]:
             cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout / 1000))), host]
 
         out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=(timeout / 1000) + 1.0)
-        match = re.search(r"(?:time[=<]|tiempo[=<])\s*(\d+(?:\.\d+)?)\s*ms", out, re.IGNORECASE)
+        if re.search(r"(?:time|tiempo)\s*<\s*1\s*m?s?", out, re.IGNORECASE):
+            return 0.5
+        match = re.search(r"(?:time|tiempo)\s*[=:]\s*(\d+(?:\.\d+)?)\s*m?s?", out, re.IGNORECASE)
         if match:
             return float(match.group(1))
+        avg_match = re.search(r"(?:Media|Average|Promedio)\s*=\s*(\d+(?:\.\d+)?)\s*m?s?", out, re.IGNORECASE)
+        if avg_match:
+            return float(avg_match.group(1))
     except Exception:
         pass
     return None
