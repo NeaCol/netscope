@@ -76,7 +76,7 @@ netscope/
 
 ### Setup
 ```bash
-git clone https://github.com/your-username/netscope.git
+git clone https://github.com/NeaCol/netscope.git
 cd netscope
 
 # Install dependencies or install in editable mode
