@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetScope: Educational Network Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="wrap">
+    <nav class="nav-bar">
+      <a href="#" class="brand-link">NetScope</a>
+      <div class="nav-menu">
+        <a href="#topology" class="nav-item">Topology</a>
+        <a href="#discovery" class="nav-item">Discovery</a>
+        <a href="#dns" class="nav-item">DNS Benchmark</a>
+        <a href="#latency" class="nav-item">Latency</a>
+        <a href="#dissector" class="nav-item">Dissector</a>
+        <a href="#guide" class="nav-item">Notes</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="hero-section">
+      <div class="hero-column" data-animate>
+        <h1 class="hero-headline">Network inspection<br>and live topology.</h1>
+        <p class="hero-lead">An educational network diagnostic workbench. Discover local subnet devices, map link graphs, benchmark DNS resolvers, and dissect raw protocol frames with zero telemetry.</p>
+        <div class="action-row">
+          <button id="btn-hero-inspect" class="button-primary">Inspect Subnet Topology</button>
+          <a href="#dissector" class="text-action">Dissect Packet Capture</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="topology" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">Network topology graph</h2>
+        <p class="section-desc">Interactive structural map connecting the local interface, default gateway, subnet hosts, and upstream routing.</p>
+      </div>
+
+      <div data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="toolbar-controls">
+            <button id="btn-refresh-topology" class="button-primary">Refresh Topology</button>
+            <button id="btn-filter-all" class="button-secondary">All Nodes</button>
+            <button id="btn-filter-hosts" class="button-secondary">Hosts Only</button>
+          </div>
+          <div id="topology-summary" class="meta-label">Loading network topology...</div>
+        </div>
+
+        <div class="topology-stage">
+          <div class="topology-canvas-container">
+            <svg id="topology-svg" viewBox="0 0 800 520" preserveAspectRatio="xMidYMid meet"></svg>
+          </div>
+          <div class="topology-sidebar">
+            <h3 class="sidebar-title">Node Inspector</h3>
+            <div id="node-inspector-content" class="sidebar-meta-list">
+              <div class="meta-row">
+                <span class="meta-label">Selected Node</span>
+                <span id="inspect-label" class="meta-value">Click any node on graph</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">IP Address</span>
+                <span id="inspect-ip" class="meta-value">-</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Physical MAC</span>
+                <span id="inspect-mac" class="meta-value">-</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Hardware Vendor</span>
+                <span id="inspect-vendor" class="meta-value">-</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Round Trip Time</span>
+                <span id="inspect-rtt" class="meta-value">-</span>
+              </div>
+              <div class="meta-row">
+                <span class="meta-label">Status</span>
+                <span id="inspect-status" class="meta-value">-</span>
+              </div>
+            </div>
+            <button id="btn-scan-selected-node" class="button-secondary">Scan Ports on Node</button>
+            <div id="inspect-ports-output" class="meta-value"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="discovery" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">Local subnet discovery</h2>
+        <p class="section-desc">Discovers active hosts, resolves MAC vendor identifiers, and enumerates physical interfaces.</p>
+      </div>
+
+      <div data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="form-row">
+            <input type="text" id="scan-cidr-input" class="input-text" placeholder="CIDR (e.g. 192.168.1.0/24)">
+            <button id="btn-run-scan" class="button-primary">Run Network Scan</button>
+          </div>
+          <div id="scan-status-text" class="meta-label">Ready to scan subnet</div>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>IP Address</th>
+              <th>Role</th>
+              <th>Hardware Vendor</th>
+              <th>Hostname</th>
+              <th>MAC Address</th>
+              <th>Response Time</th>
+            </tr>
+          </thead>
+          <tbody id="discovery-table-body">
+            <tr>
+              <td colspan="6">Click "Run Network Scan" to query local subnet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top: 3rem;" data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="sidebar-title">Host Interfaces</div>
+          <button id="btn-refresh-ifaces" class="button-secondary">Refresh Interfaces</button>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Interface</th>
+              <th>Status</th>
+              <th>IPv4</th>
+              <th>Subnet CIDR</th>
+              <th>MAC</th>
+              <th>Speed</th>
+              <th>MTU</th>
+            </tr>
+          </thead>
+          <tbody id="iface-table-body">
+            <tr><td colspan="7">Loading interface data...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="dns" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">DNS resolver benchmark</h2>
+        <p class="section-desc">Measures response latency across authoritative and public resolvers, verifying record resolution integrity.</p>
+      </div>
+
+      <div data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="form-row">
+            <input type="text" id="dns-bench-domain" class="input-text" value="cloudflare.com">
+            <button id="btn-run-dns-bench" class="button-primary">Run DNS Benchmark</button>
+          </div>
+          <div id="dns-bench-status" class="meta-label">Ready to test public resolvers</div>
+        </div>
+
+        <div id="dns-benchmark-results" class="dns-grid wrap" style="padding: 1.4rem;">
+          <div class="dns-metric-block">
+            <div class="metric-provider">Cloudflare</div>
+            <div class="metric-ip">1.1.1.1</div>
+            <div id="bench-cloudflare-val" class="metric-latency">- ms</div>
+            <div class="latency-bar-track">
+              <div id="bench-cloudflare-bar" class="latency-bar-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="dns-metric-block">
+            <div class="metric-provider">Google Public DNS</div>
+            <div class="metric-ip">8.8.8.8</div>
+            <div id="bench-google-val" class="metric-latency">- ms</div>
+            <div class="latency-bar-track">
+              <div id="bench-google-bar" class="latency-bar-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="dns-metric-block">
+            <div class="metric-provider">Quad9</div>
+            <div class="metric-ip">9.9.9.9</div>
+            <div id="bench-quad9-val" class="metric-latency">- ms</div>
+            <div class="latency-bar-track">
+              <div id="bench-quad9-bar" class="latency-bar-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="dns-metric-block">
+            <div class="metric-provider">OpenDNS</div>
+            <div class="metric-ip">208.67.222.222</div>
+            <div id="bench-opendns-val" class="metric-latency">- ms</div>
+            <div class="latency-bar-track">
+              <div id="bench-opendns-bar" class="latency-bar-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 2.5rem;" data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="form-row">
+            <input type="text" id="dns-query-domain" class="input-text" value="example.com">
+            <select id="dns-query-type" class="input-text">
+              <option value="A">A (IPv4)</option>
+              <option value="AAAA">AAAA (IPv6)</option>
+              <option value="MX">MX (Mail Exchange)</option>
+              <option value="TXT">TXT (Verification)</option>
+              <option value="NS">NS (Nameserver)</option>
+              <option value="CNAME">CNAME (Alias)</option>
+            </select>
+            <button id="btn-resolve-record" class="button-primary">Resolve Record</button>
+          </div>
+          <div id="dns-query-timing" class="meta-label">Enter domain to query</div>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Record Name</th>
+              <th>Type</th>
+              <th>TTL (Seconds)</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="dns-records-table-body">
+            <tr><td colspan="4">No queries executed yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="latency" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">Latency and jitter telemetry</h2>
+        <p class="section-desc">Measures packet arrival variance, packet loss rate, and hop-by-hop latency route tracing.</p>
+      </div>
+
+      <div data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="form-row">
+            <input type="text" id="ping-target-input" class="input-text" value="1.1.1.1">
+            <button id="btn-run-ping" class="button-primary">Measure Latency</button>
+            <button id="btn-run-trace" class="button-secondary">Trace Route</button>
+          </div>
+          <div id="ping-status-msg" class="meta-label">Ready for latency probe</div>
+        </div>
+
+        <div class="dns-grid wrap" style="padding: 1.4rem;">
+          <div class="dns-metric-block">
+            <div class="metric-provider">Average RTT</div>
+            <div id="stat-avg-rtt" class="metric-latency">- ms</div>
+            <div class="metric-ip">Mean round-trip time</div>
+          </div>
+          <div class="dns-metric-block">
+            <div class="metric-provider">Interarrival Jitter</div>
+            <div id="stat-jitter" class="metric-latency">- ms</div>
+            <div class="metric-ip">RFC 3550 delay variance</div>
+          </div>
+          <div class="dns-metric-block">
+            <div class="metric-provider">Packet Loss</div>
+            <div id="stat-loss" class="metric-latency">0.0%</div>
+            <div class="metric-ip">Failed probe ratio</div>
+          </div>
+          <div class="dns-metric-block">
+            <div class="metric-provider">Range (Min / Max)</div>
+            <div id="stat-range" class="metric-latency">- / -</div>
+            <div class="metric-ip">Spread across samples</div>
+          </div>
+        </div>
+
+        <table class="data-table" id="trace-table" style="display: none;">
+          <thead>
+            <tr>
+              <th>Hop</th>
+              <th>Router IP</th>
+              <th>RTT</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="trace-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="dissector" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">Protocol dissector studio</h2>
+        <p class="section-desc">Multi-layer frame analyzer inspecting binary headers across Ethernet, IP, TCP, UDP, DNS, and HTTP.</p>
+      </div>
+
+      <div data-ui="workbench">
+        <div class="workbench-toolbar">
+          <div class="toolbar-controls">
+            <button id="btn-load-sample-pcap" class="button-primary">Load Educational Sample PCAP</button>
+            <button id="btn-show-hex-input" class="button-secondary">Decode Custom Hex</button>
+          </div>
+          <div id="pcap-meta-text" class="meta-label">No capture loaded</div>
+        </div>
+
+        <div id="hex-input-panel" style="display: none; padding: 1.2rem; background-color: var(--surface);">
+          <div class="form-row">
+            <input type="text" id="raw-hex-input" class="input-text" style="flex: 1;" placeholder="Paste raw ethernet frame hex bytes (e.g. 000c29...)">
+            <button id="btn-decode-raw-hex" class="button-primary">Decode Frame</button>
+          </div>
+        </div>
+
+        <div style="padding: 1rem 1.4rem; background-color: var(--surface-alt);">
+          <div class="meta-label" style="margin-bottom: 0.5rem;">Captured Packets:</div>
+          <div id="packet-selector-pills" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
+        </div>
+
+        <div class="dissector-layout">
+          <div class="dissector-pane" id="dissector-layer-tree">
+            <div class="layer-block">
+              <div class="layer-title">Frame Header Inspection</div>
+              <p class="meta-label">Click "Load Educational Sample PCAP" or decode hex bytes to inspect layers.</p>
+            </div>
+          </div>
+
+          <div class="dissector-pane-dark">
+            <div class="layer-title" style="color: var(--ink-light); margin-bottom: 0.8rem;">Hex Dump</div>
+            <pre><code id="dissector-hex-dump">// Hex view synchronized to packet selection</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="guide" class="page-section" data-animate>
+      <div class="section-head">
+        <h2 class="section-title">Network fundamentals reference</h2>
+        <p class="section-desc">Core architectural principles governing subnet addressing, resolution protocols, and flow control.</p>
+      </div>
+
+      <div class="faq-columns">
+        <div class="faq-item">
+          <h3 class="faq-question">Subnet masks and CIDR notation? </h3>
+          <p class="faq-answer">Subnet masks partition 32-bit IPv4 addresses into network and host components. A /24 subnet designates 24 prefix bits for network routing, leaving 8 bits for 254 unique assignable host addresses.</p>
+        </div>
+
+        <div class="faq-item">
+          <h3 class="faq-question">Address Resolution Protocol mechanism? </h3>
+          <p class="faq-answer">ARP binds Layer 3 IP datagrams to physical Layer 2 MAC addresses. Devices broadcast ARP requests across the local Ethernet collision domain and cache unicast replies in local kernel tables.</p>
+        </div>
+
+        <div class="faq-item">
+          <h3 class="faq-question">Recursive versus iterative DNS queries? </h3>
+          <p class="faq-answer">Recursive resolvers accept client requests and traverse the hierarchical domain tree from root hints down to authoritative nameservers, caching resolved resource records until TTL expiration.</p>
+        </div>
+
+        <div class="faq-item">
+          <h3 class="faq-question">TCP three-way handshake sequence? </h3>
+          <p class="faq-answer">Transmission Control Protocol synchronizes sequence numbers through SYN, SYN-ACK, and ACK transmissions, establishing reliable byte-stream ordering and window buffer agreements before transmitting data.</p>
+        </div>
+
+        <div class="faq-item">
+          <h3 class="faq-question">Interarrival jitter calculation? </h3>
+          <p class="faq-answer">Per RFC 3550, jitter measures the statistical variance of packet arrival intervals compared to transit delays. High jitter degrades real-time applications such as voice calls and video streaming.</p>
+        </div>
+
+        <div class="faq-item">
+          <h3 class="faq-question">TTL hop limits and routing loops? </h3>
+          <p class="faq-answer">The Time-to-Live field decrements by one at every Layer 3 forwarding router. When TTL hits zero, routers drop the packet and emit an ICMP Time Exceeded message, preventing infinite routing loops.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer-strip">
+      <div class="footer-left">NetScope Network Workbench</div>
+      <div class="footer-links">
+        <a href="#topology">Topology</a>
+        <a href="#dns">DNS</a>
+        <a href="#dissector">Dissector</a>
+        <a href="https://github.com" target="_blank" rel="noopener">GitHub</a>
+      </div>
+      <div class="footer-right">MIT Open Source Project</div>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
