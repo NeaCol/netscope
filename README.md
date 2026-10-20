@@ -1,8 +1,9 @@
 # NetScope
 
-[![Python Version](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/NeaCol/netscope/actions/workflows/ci.yml/badge.svg)](https://github.com/NeaCol/netscope/actions)
+[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-52%20passed-brightgreen.svg)]()
+[![Tests Passing](https://img.shields.io/badge/tests-52%20passed-brightgreen.svg)](https://github.com/NeaCol/netscope/actions)
 [![Code Style: Clean](https://img.shields.io/badge/code%20style-clean%20%26%20typed-black.svg)]()
 [![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
 
