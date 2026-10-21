@@ -9,7 +9,7 @@
 
 > **Educational Network Diagnostic Workbench & Topology Visualizer**
 
-NetScope is an open-source, dual-mode (CLI & Self-Hosted Web Dashboard) network engineering utility designed for students, educators, and systems engineers. It provides legitimate diagnostic capabilities across local subnet discovery, multi-layer binary packet dissection, recursive DNS resolution benchmarking, and interactive topological graph mapping.
+NetScope is an open-source, dual-mode (CLI and self-hosted web dashboard) network engineering utility for students, educators, and systems engineers. It provides diagnostic capabilities across local subnet discovery, multi-layer binary packet dissection, recursive DNS resolution benchmarking, and interactive topological graph mapping.
 
 ---
 
@@ -33,7 +33,7 @@ netscope/
 │   └── topology.py    # Hierarchical graph generator (WAN -> Gateway -> Hosts)
 ├── cli/               # Command-line interface with table and JSON formatting
 │   └── main.py        # Subcommands: interfaces, scan, ports, dns, ping, trace, pcap, topology, serve
-└── dashboard/         # Self-hosted anti-slop web dashboard
+└── dashboard/         # Self-hosted web dashboard
     ├── server.py      # FastAPI / Uvicorn REST backend and static file server
     └── static/        # Zero-telemetry frontend (Jost typography, SVG topology, inspector)
 ```
@@ -151,7 +151,7 @@ Visit `http://127.0.0.1:8080` in any modern browser.
 
 ## Running the Test Suite
 
-The repository includes a comprehensive 52-test unit and integration test suite:
+The test suite covers unit and integration tests (52 tests):
 
 ```bash
 pytest tests -v
@@ -181,4 +181,4 @@ NetScope is designed exclusively for educational demonstration, diagnostic netwo
 
 ## License
 
-This project is released under the [MIT License](LICENSE). Contributions, issues, and forks are welcome.
+This project is licensed under the [MIT License](LICENSE).

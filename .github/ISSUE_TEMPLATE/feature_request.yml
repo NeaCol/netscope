@@ -5,7 +5,7 @@ labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
-      value: Thank you for suggesting a feature for NetScope!
+      value: Propose feature enhancements with specific use cases and expected behavior.
   - type: textarea
     id: problem
     attributes:

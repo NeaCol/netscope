@@ -1,8 +1,6 @@
 # Contributing to NetScope
 
-Thank you for your interest in contributing to **NetScope**!
-
-NetScope is an educational network diagnostic workbench and live topology visualizer. We welcome bug reports, documentation improvements, and pull requests.
+Guidelines for reporting bugs, submitting documentation improvements, and contributing code to NetScope.
 
 ---
 

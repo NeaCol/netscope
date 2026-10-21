@@ -5,7 +5,7 @@ labels: ["bug"]
 body:
   - type: markdown
     attributes:
-      value: Thanks for taking the time to report an issue with NetScope!
+      value: Provide a reproducible bug report with operating system, Python version, command executed, and error output.
   - type: input
     id: environment
     attributes:
