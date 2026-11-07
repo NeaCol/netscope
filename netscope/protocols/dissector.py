@@ -304,20 +304,41 @@ def _dissect_icmp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketL
     return summary
 
 
-def _dissect_icmpv6(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
-    icmp_type, icmp_code, icmp_chk = struct.unpack("!BBH", l4_data[:4])
+def resolve_icmpv6_type_name(icmp_type: int) -> str:
+    """Resolve standard RFC 4443 and RFC 4861 ICMPv6 message type names."""
     icmpv6_names = {
         1: "Destination Unreachable",
         2: "Packet Too Big",
         3: "Time Exceeded",
+        4: "Parameter Problem",
         128: "Echo Request",
         129: "Echo Reply",
         133: "Router Solicitation",
         134: "Router Advertisement",
         135: "Neighbor Solicitation",
         136: "Neighbor Advertisement",
+        137: "Redirect Message",
     }
-    type_name = icmpv6_names.get(icmp_type, f"Type {icmp_type}")
+    return icmpv6_names.get(icmp_type, f"Type {icmp_type}")
+
+
+def decode_tcp_flags(flags: int) -> Dict[str, bool]:
+    """Decode 8-bit TCP control flags including RFC 3168 ECN flags (CWR, ECE)."""
+    return {
+        "CWR": bool(flags & 0x80),
+        "ECE": bool(flags & 0x40),
+        "URG": bool(flags & 0x20),
+        "ACK": bool(flags & 0x10),
+        "PSH": bool(flags & 0x08),
+        "RST": bool(flags & 0x04),
+        "SYN": bool(flags & 0x02),
+        "FIN": bool(flags & 0x01),
+    }
+
+
+def _dissect_icmpv6(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
+    icmp_type, icmp_code, icmp_chk = struct.unpack("!BBH", l4_data[:4])
+    type_name = resolve_icmpv6_type_name(icmp_type)
     summary = f"ICMPv6 {type_name} ({src_ip} -> {dst_ip})"
 
     icmp_fields = {
@@ -346,14 +367,7 @@ def _dissect_tcp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLa
     if tcp_hdr_len < 20 or tcp_hdr_len > len(l4_data):
         tcp_hdr_len = 20
 
-    flag_bits = {
-        "URG": bool(flags & 0x20),
-        "ACK": bool(flags & 0x10),
-        "PSH": bool(flags & 0x08),
-        "RST": bool(flags & 0x04),
-        "SYN": bool(flags & 0x02),
-        "FIN": bool(flags & 0x01),
-    }
+    flag_bits = decode_tcp_flags(flags)
     active_flags = [k for k, v in flag_bits.items() if v]
     flags_repr = ",".join(active_flags) if active_flags else "None"
 
