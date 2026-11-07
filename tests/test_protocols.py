@@ -1,6 +1,12 @@
 import io
 import unittest
-from netscope.protocols.dissector import dissect_packet, format_hex_dump, format_mac
+from netscope.protocols.dissector import (
+    decode_tcp_flags,
+    dissect_packet,
+    format_hex_dump,
+    format_mac,
+    resolve_icmpv6_type_name,
+)
 from netscope.protocols.dns import encode_dns_query, parse_dns_response, query_dns
 from netscope.protocols.pcap import generate_educational_pcap, parse_pcap_packets, read_pcap, write_pcap
 
@@ -149,3 +155,25 @@ class TestProtocols(unittest.TestCase):
         buf.seek(0)
         packets = list(read_pcap(buf))
         self.assertEqual(len(packets), 0)
+
+    def test_decode_tcp_flags_ecn(self):
+        # 0x82: CWR (0x80) + SYN (0x02)
+        flags = decode_tcp_flags(0x82)
+        self.assertTrue(flags["CWR"])
+        self.assertTrue(flags["SYN"])
+        self.assertFalse(flags["ACK"])
+        self.assertFalse(flags["ECE"])
+
+        # 0x58: ECE (0x40) + ACK (0x10) + PSH (0x08)
+        flags2 = decode_tcp_flags(0x58)
+        self.assertTrue(flags2["ECE"])
+        self.assertTrue(flags2["ACK"])
+        self.assertTrue(flags2["PSH"])
+        self.assertFalse(flags2["SYN"])
+
+    def test_resolve_icmpv6_type_names(self):
+        self.assertEqual(resolve_icmpv6_type_name(128), "Echo Request")
+        self.assertEqual(resolve_icmpv6_type_name(129), "Echo Reply")
+        self.assertEqual(resolve_icmpv6_type_name(135), "Neighbor Solicitation")
+        self.assertEqual(resolve_icmpv6_type_name(136), "Neighbor Advertisement")
+        self.assertEqual(resolve_icmpv6_type_name(999), "Type 999")
