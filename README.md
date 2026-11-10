@@ -1,11 +1,18 @@
 # NetScope
 
-[![CI](https://github.com/NeaCol/netscope/actions/workflows/ci.yml/badge.svg)](https://github.com/NeaCol/netscope/actions)
-[![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-52%20passed-brightgreen.svg)](https://github.com/NeaCol/netscope/actions)
-[![Code Style: Clean](https://img.shields.io/badge/code%20style-clean%20%26%20typed-black.svg)]()
-[![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey.svg)]()
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python Version" />
+  <img src="https://img.shields.io/badge/FastAPI-0.100%2B-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Kali_Linux-Verified-557C94?style=for-the-badge&logo=kalilinux&logoColor=white" alt="Kali Linux Audited" />
+  <img src="https://img.shields.io/badge/Tests-54%20passed-brightgreen?style=for-the-badge" alt="Tests" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License MIT" />
+</p>
+
+<p align="center">
+  <a href="https://skillicons.dev">
+    <img src="https://skillicons.dev/icons?i=python,fastapi,linux,bash,docker,git" alt="Tech Stack" />
+  </a>
+</p>
 
 > **Educational Network Diagnostic Workbench & Topology Visualizer**
 
@@ -151,7 +158,7 @@ Visit `http://127.0.0.1:8080` in any modern browser.
 
 ## Running the Test Suite
 
-The test suite covers unit and integration tests (52 tests):
+The test suite covers unit and integration tests (54 tests):
 
 ```bash
 pytest tests -v
@@ -160,15 +167,15 @@ pytest tests -v
 Output:
 ```
 ============================= test session starts =============================
-collected 52 items
+collected 54 items
 
-tests/test_analyzer.py ........                                          [ 15%]
-tests/test_cli.py ........                                               [ 30%]
-tests/test_dashboard_api.py ............                                  [ 53%]
-tests/test_protocols.py ................                                 [ 84%]
+tests/test_analyzer.py ........                                          [ 14%]
+tests/test_cli.py ........                                               [ 29%]
+tests/test_dashboard_api.py ............                                  [ 51%]
+tests/test_protocols.py ..................                               [ 85%]
 tests/test_scanner.py ........                                           [100%]
 
-======================= 52 passed, 1 warning in 2.38s =========================
+======================= 54 passed, 1 warning in 3.52s =========================
 ```
 
 ---
