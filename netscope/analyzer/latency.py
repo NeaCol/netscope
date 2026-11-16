@@ -1,6 +1,7 @@
 import math
 import platform
 import re
+import shutil
 import socket
 import statistics
 import subprocess
@@ -74,7 +75,9 @@ def icmp_ping_single(host: str, timeout: int = 1000) -> Optional[float]:
         if platform.system() == "Windows":
             cmd = ["ping", "-n", "1", "-w", str(timeout), host]
         else:
-            cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout / 1000))), host]
+            # -W takes whole seconds: round up, otherwise a 1500 ms budget
+            # silently became 1 s and probes "timed out" that would have passed.
+            cmd = ["ping", "-c", "1", "-W", str(max(1, math.ceil(timeout / 1000))), host]
 
         out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=(timeout / 1000) + 1.0)
         if re.search(r"(?:time|tiempo)\s*<\s*1\s*m?s?", out, re.IGNORECASE):
@@ -90,7 +93,19 @@ def icmp_ping_single(host: str, timeout: int = 1000) -> Optional[float]:
     return None
 
 
+LATENCY_MODES = ("auto", "icmp", "tcp")
+
+
 def measure_latency(host: str, count: int = 5, interval: float = 0.1, mode: str = "auto") -> LatencyStats:
+    if count < 1:
+        # count=0 used to report "0 transmitted, 0.0% loss" with no data at all;
+        # a negative count reported 100% loss. Both looked like healthy runs.
+        raise ValueError(f"count must be at least 1, got {count}")
+    if interval < 0:
+        raise ValueError(f"interval must be >= 0, got {interval}")
+    if mode not in LATENCY_MODES:
+        raise ValueError(f"unsupported probe mode {mode!r}; choose one of: {', '.join(LATENCY_MODES)}")
+
     samples: List[float] = []
 
     for i in range(count):
@@ -135,9 +150,32 @@ def measure_latency(host: str, count: int = 5, interval: float = 0.1, mode: str 
     )
 
 
-def run_traceroute(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5) -> List[TracerouteHop]:
+@dataclass
+class TracerouteReport:
+    hops: List[TracerouteHop] = field(default_factory=list)
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"hops": [h.to_dict() for h in self.hops], "error": self.error}
+
+
+def run_traceroute_report(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5) -> TracerouteReport:
+    """Trace a route and explain *why* it is empty when it is.
+
+    Returning an empty list for "the traceroute binary is not installed" made
+    the CLI report "no responsive hops or host unreachable" - a network
+    diagnosis for a missing package.
+    """
+    if max_hops < 1:
+        raise ValueError(f"max_hops must be at least 1, got {max_hops}")
+    if timeout_per_hop <= 0:
+        raise ValueError(f"timeout_per_hop must be > 0, got {timeout_per_hop}")
+
     hops: List[TracerouteHop] = []
     is_windows = platform.system() == "Windows"
+    binary = "tracert" if is_windows else "traceroute"
+    if shutil.which(binary) is None:
+        return TracerouteReport(hops=[], error=f"{binary} is not installed; install it to use hop-by-hop tracing")
 
     try:
         if is_windows:
@@ -180,7 +218,11 @@ def run_traceroute(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5
             )
             if ip_val and ip_val == target:
                 break
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 - reported back to the caller
+        return TracerouteReport(hops=hops, error=f"traceroute failed: {exc}")
 
-    return hops
+    return TracerouteReport(hops=hops)
+
+
+def run_traceroute(target: str, max_hops: int = 20, timeout_per_hop: float = 1.5) -> List[TracerouteHop]:
+    return run_traceroute_report(target, max_hops=max_hops, timeout_per_hop=timeout_per_hop).hops
