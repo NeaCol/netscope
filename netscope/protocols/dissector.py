@@ -1,4 +1,3 @@
-import ipaddress
 import socket
 import struct
 from dataclasses import asdict, dataclass, field
@@ -128,6 +127,35 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
 
     payload = raw_data[14:]
 
+    # 802.1Q / 802.1ad (QinQ): one or more 4-byte tags sit between the source
+    # MAC and the real ethertype.  Without this the frame fell through to
+    # "Raw Packet" and a tagged LAN looked like unparseable traffic.
+    service_tags = 0
+    while ethertype in (0x8100, 0x88A8, 0x9100) and service_tags < 3 and len(payload) >= 4:
+        tci, inner_ethertype = struct.unpack("!HH", payload[:4])
+        payload = payload[4:]
+        service_tags += 1
+        layers.append(
+            PacketLayer(
+                name="802.1Q VLAN Tag" if ethertype == 0x8100 else "802.1ad Service Tag (QinQ)",
+                fields={
+                    "PCP (Priority)": tci >> 13,
+                    "DEI (Drop Eligible)": format((tci >> 12) & 0x1, "01b"),
+                    "VLAN ID": tci & 0x0FFF,
+                    "Inner EtherType": f"0x{inner_ethertype:04x}",
+                },
+                description="VLAN tag inserted between the L2 header and the payload (IEEE 802.1Q).",
+            )
+        )
+        ethertype = inner_ethertype
+
+    if service_tags:
+        eth_layer.fields["EtherType"] = f"0x{ethertype:04x} (after {service_tags} VLAN tag(s))"
+        notes.append(
+            f"{service_tags} VLAN tag(s) stripped: the frame carries {service_tags} 802.1Q header(s), "
+            "so the payload starts after the tag stack, not directly after the MAC pair."
+        )
+
     if ethertype == 0x0806:
         if len(payload) >= 28:
             hw_type, proto_type, hw_len, proto_len, opcode = struct.unpack("!HHBBH", payload[:8])
@@ -186,7 +214,12 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
             proto_names = {1: "ICMP", 6: "TCP", 17: "UDP", 47: "GRE", 50: "ESP", 89: "OSPF"}
             proto_str = proto_names.get(proto_num, f"Protocol {proto_num}")
 
-            summary = f"IPv4 {src_ip} -> {dst_ip} ({proto_str})"
+            if frag_offset > 0:
+                summary = (
+                    f"IPv4 fragment {src_ip} -> {dst_ip} ({proto_str}, offset {frag_offset * 8} bytes)"
+                )
+            else:
+                summary = f"IPv4 {src_ip} -> {dst_ip} ({proto_str})"
 
             layers.append(
                 PacketLayer(
@@ -217,12 +250,29 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
                 notes.append(f"TTL={ttl}: typical for network appliances/routers (initial default 255).")
 
             l4_data = payload[ihl:]
-            if proto_num == 1 and len(l4_data) >= 8:
-                summary = _dissect_icmp(l4_data, src_ip, dst_ip, layers, notes)
-            elif proto_num == 6 and len(l4_data) >= 20:
-                summary = _dissect_tcp(l4_data, src_ip, dst_ip, layers, notes)
-            elif proto_num == 17 and len(l4_data) >= 8:
-                summary = _dissect_udp(l4_data, src_ip, dst_ip, layers, notes)
+            if 0 < ip_total_length <= len(payload) and ip_total_length >= ihl:
+                # The frame can be padded to the 60-byte Ethernet minimum;
+                # the IP header's Total Length is the authority on where the
+                # datagram ends, so app-layer parsers must not see the padding.
+                l4_data = payload[ihl:ip_total_length]
+
+            if frag_offset > 0:
+                notes.append(
+                    f"Fragment offset {frag_offset * 8} bytes: this slice carries no transport header, "
+                    "so TCP/UDP/ICMP fields are not dissected here."
+                )
+            else:
+                if mf:
+                    notes.append(
+                        f"More Fragments flag set (offset {frag_offset * 8} bytes): later fragments of this "
+                        f"datagram do not carry a {proto_str} header and must be reassembled first."
+                    )
+                if proto_num == 1 and len(l4_data) >= 8:
+                    summary = _dissect_icmp(l4_data, src_ip, dst_ip, layers, notes)
+                elif proto_num == 6 and len(l4_data) >= 20:
+                    summary = _dissect_tcp(l4_data, src_ip, dst_ip, layers, notes)
+                elif proto_num == 17 and len(l4_data) >= 8:
+                    summary = _dissect_udp(l4_data, src_ip, dst_ip, layers, notes)
 
     elif ethertype == 0x86DD and len(payload) >= 40:
         v_tc_fl = struct.unpack("!I", payload[:4])[0]
@@ -249,6 +299,8 @@ def dissect_packet(raw_data: bytes, timestamp: float = 0.0) -> DissectedPacket:
         )
 
         l4_data = payload[40:]
+        if 0 < payload_len and 40 + payload_len <= len(payload):
+            l4_data = payload[40 : 40 + payload_len]
         if next_hdr == 6 and len(l4_data) >= 20:
             summary = _dissect_tcp(l4_data, src_ip6, dst_ip6, layers, notes)
         elif next_hdr == 17 and len(l4_data) >= 8:
@@ -361,10 +413,109 @@ def _dissect_icmpv6(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[Packe
     return summary
 
 
+TCP_OPTION_NAMES = {
+    0: "End of Option List",
+    1: "No-Operation",
+    2: "MSS",
+    3: "Window Scale",
+    4: "SACK Permitted",
+    5: "SACK",
+    8: "Timestamps",
+    28: "User Timeout",
+    29: "Authentication",
+    30: "Multipath TCP",
+    34: "TCP Fast Open",
+}
+
+
+def parse_tcp_options(raw: bytes) -> Dict[str, Any]:
+    """Decode the TCP option block (the bytes between the 20-byte header and the payload).
+
+    SYN segments carry the connection parameters that explain the rest of the
+    conversation - MSS, window scaling, SACK, timestamps - and they were being
+    skipped entirely.  A malformed option length is reported instead of being
+    followed (a length of 0 would otherwise loop forever).
+    """
+    options: Dict[str, Any] = {}
+    unknown: List[int] = []
+    offset = 0
+    while offset < len(raw):
+        kind = raw[offset]
+        if kind == 0:  # End of option list: the rest is padding.
+            break
+        if kind == 1:  # NOP padding between options.
+            offset += 1
+            continue
+        if offset + 1 >= len(raw):
+            options["Truncated"] = f"option {kind} has no length byte"
+            break
+        length = raw[offset + 1]
+        if length < 2:  # Invalid: would never advance the cursor.
+            options["Malformed"] = f"option {kind} declares length {length}"
+            break
+        if offset + length > len(raw):
+            options["Truncated"] = f"option {kind} claims {length} bytes, only {len(raw) - offset} left"
+            break
+        value = raw[offset + 2 : offset + length]
+
+        if kind == 2 and length == 4:
+            options["MSS"] = struct.unpack("!H", value)[0]
+        elif kind == 3 and length == 3:
+            options["Window Scale"] = value[0]
+        elif kind == 4 and length == 2:
+            options["SACK Permitted"] = True
+        elif kind == 5 and length >= 10 and (length - 2) % 8 == 0:
+            blocks = []
+            for block in range(0, len(value), 8):
+                left, right = struct.unpack("!II", value[block : block + 8])
+                blocks.append({"left": left, "right": right})
+            options["SACK Blocks"] = blocks
+        elif kind == 8 and length == 10:
+            tsval, tsecr = struct.unpack("!II", value)
+            options["Timestamps"] = {"tsval": tsval, "tsecr": tsecr}
+        elif kind == 28 and length == 4:
+            options["User Timeout"] = struct.unpack("!H", value)[0]
+        else:
+            unknown.append(kind)
+
+        offset += length
+
+    if unknown:
+        options["Unparsed Options"] = unknown
+    return options
+
+
+def format_tcp_options(options: Dict[str, Any]) -> str:
+    parts = []
+    if "MSS" in options:
+        parts.append(f"MSS={options['MSS']}")
+    if "Window Scale" in options:
+        parts.append(f"WS={options['Window Scale']}")
+    if options.get("SACK Permitted"):
+        parts.append("SACK_PERM")
+    if "SACK Blocks" in options:
+        parts.append(f"SACK_blocks={len(options['SACK Blocks'])}")
+    if "Timestamps" in options:
+        parts.append(f"TS={options['Timestamps']['tsval']}/{options['Timestamps']['tsecr']}")
+    if "Unparsed Options" in options:
+        names = [TCP_OPTION_NAMES.get(kind, str(kind)) for kind in options["Unparsed Options"]]
+        parts.append("other=" + ",".join(names))
+    if "Malformed" in options:
+        parts.append(f"malformed({options['Malformed']})")
+    if "Truncated" in options:
+        parts.append(f"truncated({options['Truncated']})")
+    return ", ".join(parts)
+
+
 def _dissect_tcp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLayer], notes: List[str]) -> str:
     src_port, dst_port, seq, ack, offset_reserved, flags, win, tcp_chk, urg = struct.unpack("!HHIIBBHHH", l4_data[:20])
     tcp_hdr_len = (offset_reserved >> 4) * 4
-    if tcp_hdr_len < 20 or tcp_hdr_len > len(l4_data):
+    header_len_valid = 20 <= tcp_hdr_len <= len(l4_data)
+    if not header_len_valid:
+        notes.append(
+            f"TCP data offset declares {tcp_hdr_len} bytes, outside the 20-{len(l4_data)} byte header window; "
+            "falling back to 20 bytes."
+        )
         tcp_hdr_len = 20
 
     flag_bits = decode_tcp_flags(flags)
@@ -373,20 +524,38 @@ def _dissect_tcp(l4_data: bytes, src_ip: str, dst_ip: str, layers: List[PacketLa
 
     summary = f"TCP {src_ip}:{src_port} -> {dst_ip}:{dst_port} [{flags_repr}] Seq={seq} Ack={ack}"
 
+    fields: Dict[str, Any] = {
+        "Source Port": src_port,
+        "Destination Port": dst_port,
+        "Sequence Number": seq,
+        "Acknowledgment Number": ack,
+        "Header Length": f"{tcp_hdr_len} bytes",
+        "Flags": flags_repr,
+        "Window Size": win,
+        "Checksum": f"0x{tcp_chk:04x}",
+        "Urgent Pointer": urg,
+    }
+
+    if header_len_valid and tcp_hdr_len > 20:
+        options = parse_tcp_options(l4_data[20:tcp_hdr_len])
+        if options:
+            fields["Options"] = format_tcp_options(options)
+            if "MSS" in options:
+                notes.append(
+                    f"TCP MSS {options['MSS']} bytes: the largest payload this endpoint will accept in one segment."
+                )
+            if "Window Scale" in options:
+                notes.append(
+                    f"Window scale {options['Window Scale']}: receive window {win} is advertised as "
+                    f"{win * (2 ** options['Window Scale'])} bytes."
+                )
+            if options.get("SACK Permitted"):
+                notes.append("SACK permitted: selective acknowledgements let the receiver report non-contiguous data.")
+
     layers.append(
         PacketLayer(
             name="TCP (Transmission Control Protocol)",
-            fields={
-                "Source Port": src_port,
-                "Destination Port": dst_port,
-                "Sequence Number": seq,
-                "Acknowledgment Number": ack,
-                "Header Length": f"{tcp_hdr_len} bytes",
-                "Flags": flags_repr,
-                "Window Size": win,
-                "Checksum": f"0x{tcp_chk:04x}",
-                "Urgent Pointer": urg,
-            },
+            fields=fields,
             description="Connection-oriented, reliable transport layer with byte-stream ordering.",
         )
     )
@@ -449,8 +618,8 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
             "Response Code": rcode,
         }
 
-        q_name, offset = parse_dns_name(data, 12)
-        qtype_str = "A"
+        q_name, offset = parse_dns_name(data, 12) if qdcount else ("", 0)
+        qtype_str = "unknown"
         if q_name:
             dns_fields["Query Domain"] = q_name
             if 12 + offset + 4 <= len(data):
@@ -461,7 +630,7 @@ def _dissect_app_layer(data: bytes, src_port: int, dst_port: int, layers: List[P
 
         answers_list: List[str] = []
         if is_response and ancount > 0:
-            ans_offset = 12 + offset + 4
+            ans_offset = 12 + offset + 4 if qdcount else 12
             for _ in range(min(ancount, 6)):
                 if ans_offset >= len(data):
                     break
