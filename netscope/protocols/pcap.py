@@ -1,11 +1,46 @@
 import io
 import struct
 import time
-from typing import BinaryIO, Generator, List, Optional, Tuple, Union
+from typing import BinaryIO, Dict, Generator, List, Tuple, Union
 from netscope.protocols.dissector import DissectedPacket, dissect_packet
 
 PCAP_MAGIC = 0xA1B2C3D4
+# Same file format, but the per-packet sub-second field counts nanoseconds.
+# tcpdump/Wireshark write this when --time-stamp-precision=nano is used, and
+# the previous reader treated the file as "not a pcap" and yielded nothing.
+PCAP_MAGIC_NSEC = 0xA1B23C4D
+PCAPNG_MAGIC = 0x0A0D0D0A
 LINKTYPE_ETHERNET = 1
+
+LINKTYPE_NAMES: Dict[int, str] = {
+    0: "LINKTYPE_NULL",
+    101: "LINKTYPE_RAW (raw IP)",
+    105: "LINKTYPE_IEEE802_11 (Wi-Fi)",
+    113: "LINKTYPE_LINUX_SLL (Linux cooked capture)",
+    276: "LINKTYPE_LINUX_SLL2",
+}
+
+
+class PcapFormatError(ValueError):
+    """Raised when a file is not a capture this dissector can read."""
+
+
+def _decode_magic(magic_be: int) -> Tuple[str, bool]:
+    """Map the first four bytes to (struct byte order, nanosecond timestamps)."""
+    if magic_be == PCAP_MAGIC:
+        return ">", False
+    if magic_be == PCAP_MAGIC_NSEC:
+        return ">", True
+    if magic_be == struct.unpack(">I", struct.pack("<I", PCAP_MAGIC))[0]:
+        return "<", False
+    if magic_be == struct.unpack(">I", struct.pack("<I", PCAP_MAGIC_NSEC))[0]:
+        return "<", True
+    if magic_be == PCAPNG_MAGIC:
+        raise PcapFormatError(
+            "this is a pcapng capture; NetScope reads classic libpcap files "
+            "(convert it first, e.g. `editcap -F pcap in.pcapng out.pcap`)"
+        )
+    raise PcapFormatError(f"not a pcap capture (magic 0x{magic_be:08x})")
 
 
 def read_pcap(stream_or_path: Union[str, bytes, BinaryIO]) -> Generator[Tuple[float, bytes], None, None]:
@@ -20,34 +55,36 @@ def read_pcap(stream_or_path: Union[str, bytes, BinaryIO]) -> Generator[Tuple[fl
 
     global_header = stream.read(24)
     if len(global_header) < 24:
-        return
+        raise PcapFormatError(
+            f"truncated pcap header ({len(global_header)} of 24 bytes) - the file is empty or not a capture"
+        )
 
-    magic, ver_major, ver_minor, thiszone, sigfigs, snaplen, network = struct.unpack("!IHHiIII", global_header)
+    byte_order, nanosecond = _decode_magic(struct.unpack(">I", global_header[:4])[0])
+    ver_major, ver_minor, thiszone, sigfigs, snaplen, network = struct.unpack(
+        byte_order + "HHiIII", global_header[4:24]
+    )
 
-    is_big_endian = magic == 0xA1B2C3D4
-    if magic == 0xD4C3B2A1:
-        is_big_endian = False
-    elif magic != 0xA1B2C3D4:
-        fmt = "<IHHiIII"
-        magic, ver_major, ver_minor, thiszone, sigfigs, snaplen, network = struct.unpack(fmt, global_header)
-        if magic == 0xA1B2C3D4:
-            is_big_endian = False
-        else:
-            return
+    if network != LINKTYPE_ETHERNET:
+        link_name = LINKTYPE_NAMES.get(network, f"linktype {network}")
+        raise PcapFormatError(
+            f"unsupported capture link type: {link_name}; NetScope dissects Ethernet frames "
+            "(convert it first, e.g. `editcap -T ether in.pcap out.pcap`)"
+        )
 
-    hdr_fmt = ">IIII" if is_big_endian else "<IIII"
+    hdr_fmt = byte_order + "IIII"
+    divisor = 1_000_000_000.0 if nanosecond else 1_000_000.0
 
     while True:
         pkt_hdr = stream.read(16)
         if len(pkt_hdr) < 16:
             break
-        ts_sec, ts_usec, incl_len, orig_len = struct.unpack(hdr_fmt, pkt_hdr)
+        ts_sec, ts_frac, incl_len, orig_len = struct.unpack(hdr_fmt, pkt_hdr)
         if incl_len <= 0 or incl_len > 262144:
             break
         data = stream.read(incl_len)
         if len(data) < incl_len:
             break
-        timestamp = ts_sec + (ts_usec / 1_000_000.0)
+        timestamp = ts_sec + (ts_frac / divisor)
         yield timestamp, data
 
 
@@ -82,7 +119,6 @@ def generate_educational_pcap() -> bytes:
 
     client_mac = b"\x00\x0c\x29\x4b\x82\x11"
     gw_mac = b"\x00\x1f\x6d\x9a\x33\x54"
-    server_mac = b"\x52\x54\x00\x12\x34\x56"
 
     # Packet 1: ARP Request
     arp_req = (
@@ -115,8 +151,8 @@ def generate_educational_pcap() -> bytes:
         gw_mac
         + client_mac
         + b"\x08\x00"
-        + struct.pack("!BBHHHBBH4s4s", 0x45, 0, 57, 0x1001, 0x4000, 64, 17, 0, b"\xc0\xa8\x01\x32", b"\x01\x01\x01\x01")
-        + struct.pack("!HHHH", 53421, 53, 37, 0)
+        + struct.pack("!BBHHHBBH4s4s", 0x45, 0, 58, 0x1001, 0x4000, 64, 17, 0, b"\xc0\xa8\x01\x32", b"\x01\x01\x01\x01")
+        + struct.pack("!HHHH", 53421, 53, 38, 0)
         + struct.pack("!HHHHHH", 0x7A12, 0x0100, 1, 0, 0, 0)
         + b"\x08netscope\x03dev\x00"
         + struct.pack("!HH", 1, 1)

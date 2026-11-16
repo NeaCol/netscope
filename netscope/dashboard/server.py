@@ -1,5 +1,4 @@
 import base64
-import os
 import platform
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -18,7 +17,7 @@ from netscope.protocols.dns import benchmark_resolvers, query_dns
 from netscope.protocols.pcap import generate_educational_pcap, parse_pcap_packets
 from netscope.scanner.discovery import scan_subnet
 from netscope.scanner.interfaces import get_default_gateway_and_ip, get_primary_interface, list_interfaces
-from netscope.scanner.ports import scan_ports
+from netscope.scanner.ports import parse_port_spec, scan_ports
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -84,20 +83,21 @@ def get_interfaces() -> List[Dict[str, Any]]:
 
 @app.get("/api/scan")
 def scan_network(subnet: Optional[str] = None, threads: int = Query(40, ge=1, le=100)) -> List[Dict[str, Any]]:
-    hosts = scan_subnet(cidr=subnet, max_threads=threads)
+    try:
+        hosts = scan_subnet(cidr=subnet, max_threads=threads)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return [h.to_dict() for h in hosts]
 
 
 @app.get("/api/ports")
 def scan_host_ports(host: str, ports: Optional[str] = None) -> List[Dict[str, Any]]:
-    target_ports = None
-    if ports:
-        try:
-            target_ports = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]
-            if len(target_ports) > 100:
-                raise HTTPException(status_code=400, detail="Maximum 100 ports allowed per scan request")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid ports parameter")
+    try:
+        target_ports = parse_port_spec(ports)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    if target_ports is not None and len(target_ports) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 ports allowed per scan request")
     results = scan_ports(host=host, ports=target_ports)
     return [p.to_dict() for p in results]
 
@@ -109,10 +109,13 @@ def get_dns(
     server: str = Query("1.1.1.1"),
     benchmark: bool = Query(False),
 ) -> Dict[str, Any]:
-    if benchmark:
-        bench = benchmark_resolvers(domain=domain)
-        return {"domain": domain, "benchmark": [b.to_dict() for b in bench]}
-    result = query_dns(domain=domain, record_type=type, server=server)
+    try:
+        if benchmark:
+            bench = benchmark_resolvers(domain=domain)
+            return {"domain": domain, "benchmark": [b.to_dict() for b in bench]}
+        result = query_dns(domain=domain, record_type=type, server=server)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return result.to_dict()
 
 

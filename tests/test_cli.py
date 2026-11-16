@@ -1,7 +1,9 @@
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
+
 from netscope.cli.main import build_parser, main
 
 
@@ -70,3 +72,68 @@ class TestCLI(unittest.TestCase):
         with redirect_stdout(f):
             code = main(["trace", "non-existent-target-test-123.invalid", "--max-hops", "1"])
         self.assertEqual(code, 0)
+
+
+class TestCliValidation(unittest.TestCase):
+    def test_missing_capture_file_exits_2(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["pcap", "/tmp/definitely-not-here.pcap"])
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read", err.getvalue())
+
+    def test_non_pcap_file_exits_2(self):
+        path = "/tmp/netscope-not-a-capture.bin"
+        with open(path, "wb") as handle:
+            handle.write(b"just some text, not a capture at all")
+        try:
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = main(["pcap", path])
+            self.assertEqual(code, 2)
+            self.assertIn("not a pcap", err.getvalue())
+        finally:
+            import os
+            os.unlink(path)
+
+    def test_limit_zero_is_rejected_by_the_parser(self):
+        with self.assertRaises(SystemExit) as ctx:
+            build_parser().parse_args(["pcap", "--sample", "--limit", "0"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_count_zero_is_rejected_by_the_parser(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["ping", "127.0.0.1", "-c", "0"])
+
+    def test_invalid_port_token_exits_2(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["ports", "127.0.0.1", "-p", "abc"])
+        self.assertEqual(code, 2)
+        self.assertIn("invalid port", err.getvalue())
+
+    def test_out_of_range_port_exits_2(self):
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["ports", "127.0.0.1", "-p", "70000"]), 2)
+
+    def test_unknown_dns_type_exits_2(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["dns", "example.com", "--type", "FOO"])
+        self.assertEqual(code, 2)
+        self.assertIn("unsupported DNS record type", err.getvalue())
+
+    def test_invalid_subnet_exits_2(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main(["scan", "--subnet", "nonsense"])
+        self.assertEqual(code, 2)
+        self.assertIn("invalid subnet", err.getvalue())
+
+    def test_trace_without_traceroute_explains_itself(self):
+        err = io.StringIO()
+        with mock.patch("netscope.analyzer.latency.shutil.which", return_value=None):
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = main(["trace", "127.0.0.1", "--max-hops", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn("not installed", err.getvalue())

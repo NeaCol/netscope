@@ -1,5 +1,7 @@
 import unittest
-from netscope.analyzer.latency import calculate_jitter, measure_latency
+from unittest import mock
+
+from netscope.analyzer.latency import calculate_jitter, measure_latency, run_traceroute_report
 from netscope.analyzer.topology import build_network_topology
 from netscope.analyzer.traffic import analyze_traffic
 from netscope.protocols.pcap import generate_educational_pcap, parse_pcap_packets
@@ -70,3 +72,29 @@ class TestAnalyzer(unittest.TestCase):
         # Should NOT return fake hops (192.168.1.1 or 14.5ms)
         fake_hops = [h for h in hops if h.ip == "192.168.1.1" and h.rtt_ms == 1.2]
         self.assertEqual(len(fake_hops), 0)
+
+
+class TestLatencyValidation(unittest.TestCase):
+    def test_zero_probes_are_rejected(self):
+        # count=0 used to print "0 transmitted, 0.0% packet loss" - a green
+        # report produced without sending a single probe.
+        with self.assertRaises(ValueError):
+            measure_latency("127.0.0.1", count=0)
+
+    def test_negative_interval_is_rejected(self):
+        with self.assertRaises(ValueError):
+            measure_latency("127.0.0.1", count=1, interval=-1.0)
+
+    def test_unknown_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            measure_latency("127.0.0.1", count=1, mode="udp")
+
+    def test_traceroute_reports_a_missing_binary(self):
+        report = run_traceroute_report_without_binary()
+        self.assertEqual(report.hops, [])
+        self.assertIn("not installed", report.error)
+
+
+def run_traceroute_report_without_binary():
+    with mock.patch("netscope.analyzer.latency.shutil.which", return_value=None):
+        return run_traceroute_report("127.0.0.1", max_hops=1)

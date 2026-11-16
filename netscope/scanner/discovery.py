@@ -1,6 +1,5 @@
 import concurrent.futures
 import ipaddress
-import platform
 import re
 import socket
 import subprocess
@@ -114,39 +113,145 @@ class DiscoveredHost:
         return asdict(self)
 
 
+ARP_FIELD_SEPARATOR = re.compile(r"\s+")
+
+
+def normalize_mac(raw: Optional[str]) -> Optional[str]:
+    """Normalize any platform's MAC spelling to ``AA:BB:CC:DD:EE:FF``.
+
+    ``arp -a`` on macOS/BSD prints single-digit octets (``0:1f:6d:9a:33:54``),
+    Windows prints dash-separated octets and Cisco gear prints
+    ``001f.6d9a.3354``.  All of them describe the same 48-bit address, so they
+    must reach the OUI table in one canonical form - otherwise vendor lookups
+    and de-duplication silently miss every host.
+    """
+    if not raw:
+        return None
+    candidate = raw.strip().lower().replace("-", ":")
+
+    if "." in candidate and ":" not in candidate:
+        groups = candidate.split(".")
+        if len(groups) != 3 or any(len(g) != 4 for g in groups):
+            return None
+        candidate = ":".join(
+            [groups[0][0:2], groups[0][2:4], groups[1][0:2], groups[1][2:4], groups[2][0:2], groups[2][2:4]]
+        )
+
+    octets = candidate.split(":")
+    if len(octets) != 6:
+        return None
+    normalized = []
+    for octet in octets:
+        if not octet or len(octet) > 2 or not all(c in "0123456789abcdef" for c in octet):
+            return None
+        normalized.append(octet.zfill(2).upper())
+    return ":".join(normalized)
+
+
 def lookup_vendor(mac: Optional[str]) -> str:
-    if not mac:
+    normalized = normalize_mac(mac)
+    if not normalized:
         return "Unknown"
-    cleaned = mac.upper().replace("-", ":")
-    prefix = ":".join(cleaned.split(":")[:3])
+    prefix = ":".join(normalized.split(":")[:3])
     return OUI_PREFIXES.get(prefix, "Standard Network Device")
 
 
-def read_system_arp_table() -> Dict[str, str]:
-    table: Dict[str, str] = {}
+def _is_usable_ipv4(ip: str) -> bool:
+    """Filter out addresses that can never be a LAN peer worth reporting."""
     try:
-        cmd = ["arp", "-a"]
-        out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=4)
-        for line in out.splitlines():
-            line = line.strip()
-            match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-fA-F[:-]{17})", line)
-            if match:
-                ip_found = match.group(1)
-                mac_found = match.group(2).replace("-", ":").upper()
-                try:
-                    addr = ipaddress.IPv4Address(ip_found)
-                    if addr.is_multicast or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified:
-                        continue
-                    if mac_found.startswith("FF:FF:FF") or mac_found.startswith("01:00:5E") or mac_found.startswith("33:33"):
-                        continue
-                    if ip_found.endswith(".255"):
-                        continue
-                    table[ip_found] = mac_found
-                except ValueError:
-                    continue
-    except Exception:
-        pass
+        addr = ipaddress.IPv4Address(ip)
+    except ValueError:
+        return False
+    if addr.is_multicast or addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_reserved:
+        return False
+    if addr == ipaddress.IPv4Address("255.255.255.255") or ip.endswith(".255"):
+        return False
+    return True
+
+
+def _is_usable_mac(mac: str) -> bool:
+    return not (mac.startswith("FF:FF:FF") or mac.startswith("01:00:5E") or mac.startswith("33:33"))
+
+
+def _parse_arp_command_output(text: str) -> Dict[str, str]:
+    """Parse ``arp -a`` output in its net-tools, BSD/macOS and Windows shapes."""
+    table: Dict[str, str] = {}
+    mac_pattern = re.compile(r"\b[0-9a-fA-F]{1,2}(?:[:-][0-9a-fA-F]{1,2}){5}\b|\b[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\b")
+    ip_pattern = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
+
+    for line in text.splitlines():
+        ip_match = ip_pattern.search(line)
+        mac_match = mac_pattern.search(line)
+        if not ip_match or not mac_match:
+            continue
+        ip = ip_match.group(1)
+        mac = normalize_mac(mac_match.group(0))
+        if not mac or not _is_usable_ipv4(ip) or not _is_usable_mac(mac):
+            continue
+        table[ip] = mac
     return table
+
+
+def _parse_proc_net_arp(text: str) -> Dict[str, str]:
+    """Parse ``/proc/net/arp`` (available on every Linux box, net-tools or not)."""
+    table: Dict[str, str] = {}
+    for line in text.splitlines()[1:]:
+        fields = ARP_FIELD_SEPARATOR.split(line.strip())
+        if len(fields) < 4:
+            continue
+        ip, flags, mac = fields[0], fields[2], normalize_mac(fields[3])
+        # flags 0x2 == ATF_COM (complete entry); 0x0 means resolution failed.
+        if mac and flags not in ("0x0", "0x00") and _is_usable_ipv4(ip) and _is_usable_mac(mac):
+            table[ip] = mac
+    return table
+
+
+def _parse_ip_neigh_output(text: str) -> Dict[str, str]:
+    """Parse ``ip neigh show`` output (iproute2, the default on modern Linux)."""
+    table: Dict[str, str] = {}
+    for line in text.splitlines():
+        fields = ARP_FIELD_SEPARATOR.split(line.strip())
+        if len(fields) < 4 or "lladdr" not in fields:
+            continue
+        ip = fields[0]
+        mac = normalize_mac(fields[fields.index("lladdr") + 1])
+        state = fields[-1].upper()
+        if state in ("FAILED", "INCOMPLETE"):
+            continue
+        if mac and _is_usable_ipv4(ip) and _is_usable_mac(mac):
+            table[ip] = mac
+    return table
+
+
+def read_system_arp_table() -> Dict[str, str]:
+    """Read the neighbor table, falling back across the three platform sources.
+
+    ``arp`` comes from net-tools, which modern Linux distributions no longer
+    install by default, so a missing binary used to make neighbor discovery
+    report an empty LAN.  ``/proc/net/arp`` and ``ip neigh show`` cover that
+    case without adding a dependency.
+    """
+    parsers = (
+        (["arp", "-a"], _parse_arp_command_output),
+        (["ip", "neigh", "show"], _parse_ip_neigh_output),
+    )
+    for cmd, parser in parsers:
+        try:
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=4)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        table = parser(out)
+        if table:
+            return table
+
+    try:
+        with open("/proc/net/arp", "r", encoding="utf-8") as handle:
+            table = _parse_proc_net_arp(handle.read())
+            if table:
+                return table
+    except OSError:
+        pass
+    return {}
 
 
 def probe_single_host(ip: str, timeout: float = 0.15) -> tuple[str, bool, float]:
@@ -166,17 +271,49 @@ def probe_single_host(ip: str, timeout: float = 0.15) -> tuple[str, bool, float]
     return ip, False, elapsed
 
 
-def resolve_hostname(ip: str, timeout: float = 0.6) -> Optional[str]:
+def resolve_hostnames(ips: List[str], timeout: float = 0.6, max_workers: int = 20) -> Dict[str, Optional[str]]:
+    """Reverse-resolve ``ips`` with a *real* deadline.
+
+    The previous per-IP ``with ThreadPoolExecutor(...)`` helper looked bounded
+    but was not: ``future.result(timeout=...)`` raises on time, and then the
+    ``with`` block calls ``shutdown(wait=True)`` which blocks until the
+    lookup finishes anyway.  A dead reverse zone therefore stalled a scan for
+    as long as the resolver wanted.  One shared pool plus ``wait(timeout)``
+    returns at the deadline and leaves the orphaned lookups to die on their
+    own (``shutdown(wait=False, cancel_futures=True)``).
+    """
+    results: Dict[str, Optional[str]] = {ip: None for ip in ips}
+    if not ips:
+        return results
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(ips))))
+    futures = {pool.submit(socket.gethostbyaddr, ip): ip for ip in ips}
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(socket.gethostbyaddr, ip)
-            name, _, _ = future.result(timeout=timeout)
-            return name
-    except Exception:
-        return None
+        done, pending = concurrent.futures.wait(futures, timeout=max(0.0, timeout))
+        for future in pending:
+            future.cancel()
+        for future in done:
+            ip = futures[future]
+            try:
+                results[ip] = future.result()[0]
+            except Exception:
+                results[ip] = None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return results
+
+
+def resolve_hostname(ip: str, timeout: float = 0.6) -> Optional[str]:
+    return resolve_hostnames([ip], timeout=timeout).get(ip)
 
 
 def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: float = 0.15) -> List[DiscoveredHost]:
+    if max_threads < 1:
+        raise ValueError(f"max_threads must be >= 1, got {max_threads}")
+    if timeout <= 0:
+        raise ValueError(f"timeout must be > 0, got {timeout}")
+
+    explicit_cidr = cidr is not None
     gateway_ip, local_ip = get_default_gateway_and_ip()
     primary = get_primary_interface()
 
@@ -188,10 +325,19 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
     elif not cidr:
         cidr = "192.168.1.0/24"
 
-    try:
-        network = ipaddress.IPv4Network(cidr, strict=False)
-    except ValueError:
-        network = ipaddress.IPv4Network("192.168.1.0/24")
+    if explicit_cidr:
+        # A caller-supplied subnet must never be silently replaced by
+        # 192.168.1.0/24: the scan would return another network's hosts while
+        # reporting them as the requested one.
+        try:
+            network = ipaddress.IPv4Network(cidr, strict=False)
+        except ValueError as exc:
+            raise ValueError(f"invalid subnet {cidr!r}: {exc}") from None
+    else:
+        try:
+            network = ipaddress.IPv4Network(cidr, strict=False)
+        except ValueError:
+            network = ipaddress.IPv4Network("192.168.1.0/24")
 
     arp_table = read_system_arp_table()
     hosts_to_probe: List[str] = []
@@ -218,7 +364,10 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = {executor.submit(probe_single_host, ip, timeout): ip for ip in hosts_to_probe}
         for future in concurrent.futures.as_completed(futures):
-            ip, is_alive, rtt = future.result()
+            try:
+                ip, is_alive, rtt = future.result()
+            except Exception:
+                continue
             if is_alive:
                 active_ips[ip] = rtt
 
@@ -234,16 +383,7 @@ def scan_subnet(cidr: Optional[str] = None, max_threads: int = 40, timeout: floa
     if gateway_ip and gateway_ip not in active_ips:
         active_ips[gateway_ip] = 1.2
 
-    hostnames: Dict[str, Optional[str]] = {}
-    if active_ips:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(20, len(active_ips))) as ex:
-            futures_names = {ex.submit(resolve_hostname, ip, 0.6): ip for ip in active_ips.keys()}
-            for f in concurrent.futures.as_completed(futures_names):
-                target_ip = futures_names[f]
-                try:
-                    hostnames[target_ip] = f.result()
-                except Exception:
-                    hostnames[target_ip] = None
+    hostnames: Dict[str, Optional[str]] = resolve_hostnames(list(active_ips.keys()), timeout=0.6)
 
     results: List[DiscoveredHost] = []
 

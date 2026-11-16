@@ -3,14 +3,27 @@ import json
 import sys
 from typing import List, Optional
 from netscope import __version__
-from netscope.analyzer.latency import measure_latency, run_traceroute
+from netscope.analyzer.latency import measure_latency, run_traceroute_report
 from netscope.analyzer.topology import build_network_topology
 from netscope.analyzer.traffic import analyze_traffic
 from netscope.protocols.dns import benchmark_resolvers, query_dns
-from netscope.protocols.pcap import generate_educational_pcap, parse_pcap_packets
+from netscope.protocols.pcap import PcapFormatError, generate_educational_pcap, parse_pcap_packets
 from netscope.scanner.discovery import scan_subnet
 from netscope.scanner.interfaces import list_interfaces
-from netscope.scanner.ports import scan_ports
+from netscope.scanner.ports import parse_port_spec, scan_ports
+
+EXIT_USAGE = 2
+
+
+def positive_int(value: str) -> int:
+    """argparse type for counts/limits: reject 0 and negatives up front."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from None
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or greater, got {parsed}")
+    return parsed
 
 
 def print_table(headers: List[str], rows: List[List[str]]) -> None:
@@ -50,7 +63,7 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
             nic.mac or "-",
             speed,
         ])
-    print(f"\nNetScope Interfaces (Primary: *)\n")
+    print("\nNetScope Interfaces (Primary: *)\n")
     print_table(headers, rows)
     return 0
 
@@ -58,7 +71,11 @@ def cmd_interfaces(args: argparse.Namespace) -> int:
 def cmd_scan(args: argparse.Namespace) -> int:
     if not args.json:
         print(f"Scanning subnet {args.subnet or 'default'}...")
-    hosts = scan_subnet(cidr=args.subnet, max_threads=args.threads)
+    try:
+        hosts = scan_subnet(cidr=args.subnet, max_threads=args.threads)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
     if args.json:
         print(json.dumps([h.to_dict() for h in hosts], indent=2))
         return 0
@@ -84,7 +101,11 @@ def cmd_dns(args: argparse.Namespace) -> int:
     if args.benchmark:
         if not args.json:
             print(f"Running DNS resolver benchmark against {args.domain}...\n")
-        bench = benchmark_resolvers(domain=args.domain)
+        try:
+            bench = benchmark_resolvers(domain=args.domain)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return EXIT_USAGE
         if args.json:
             print(json.dumps([b.to_dict() for b in bench], indent=2))
             return 0
@@ -93,7 +114,11 @@ def cmd_dns(args: argparse.Namespace) -> int:
         print_table(headers, rows)
         return 0
 
-    res = query_dns(domain=args.domain, record_type=args.type, server=args.server)
+    try:
+        res = query_dns(domain=args.domain, record_type=args.type, server=args.server)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
     if args.json:
         print(json.dumps(res.to_dict(), indent=2))
         return 0
@@ -114,7 +139,11 @@ def cmd_dns(args: argparse.Namespace) -> int:
 def cmd_ping(args: argparse.Namespace) -> int:
     if not args.json:
         print(f"PING {args.target} ({args.count} probes)...")
-    stats = measure_latency(host=args.target, count=args.count, interval=args.interval)
+    try:
+        stats = measure_latency(host=args.target, count=args.count, interval=args.interval)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
     if args.json:
         print(json.dumps(stats.to_dict(), indent=2))
         return 0
@@ -131,13 +160,23 @@ def cmd_ping(args: argparse.Namespace) -> int:
 def cmd_trace(args: argparse.Namespace) -> int:
     if not args.json:
         print(f"Tracing route to {args.target} (max {args.max_hops} hops)...")
-    hops = run_traceroute(target=args.target, max_hops=args.max_hops)
+    try:
+        report = run_traceroute_report(target=args.target, max_hops=args.max_hops)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    hops = report.hops
+    if report.error:
+        print(f"error: {report.error}", file=sys.stderr)
     if args.json:
         print(json.dumps([h.to_dict() for h in hops], indent=2))
         return 0
 
     if not hops:
-        print(f"\nTrace to {args.target} completed: no responsive hops or host unreachable.")
+        if report.error:
+            print(f"\nTrace to {args.target} failed: {report.error}", file=sys.stderr)
+        else:
+            print(f"\nTrace to {args.target} completed: no responsive hops or host unreachable.")
         return 0
 
     headers = ["Hop", "IP Address", "RTT (ms)", "Status"]
@@ -148,17 +187,19 @@ def cmd_trace(args: argparse.Namespace) -> int:
 
 
 def cmd_ports(args: argparse.Namespace) -> int:
-    target_ports = None
-    if args.ports:
-        try:
-            target_ports = [int(p.strip()) for p in args.ports.split(",") if p.strip().isdigit()]
-        except ValueError:
-            print("Invalid port list format. Use e.g. 80,443,22")
-            return 1
+    try:
+        target_ports = parse_port_spec(args.ports)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
 
     if not args.json:
         print(f"Scanning service ports on {args.host}...")
-    results = scan_ports(host=args.host, ports=target_ports)
+    try:
+        results = scan_ports(host=args.host, ports=target_ports)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_USAGE
     if args.json:
         print(json.dumps([p.to_dict() for p in results], indent=2))
         return 0
@@ -178,21 +219,33 @@ def cmd_pcap(args: argparse.Namespace) -> int:
     if args.sample:
         data = generate_educational_pcap()
         out_path = args.output or "sample_capture.pcap"
-        with open(out_path, "wb") as f:
-            f.write(data)
+        try:
+            with open(out_path, "wb") as f:
+                f.write(data)
+        except OSError as e:
+            print(f"error: cannot write {out_path}: {e}", file=sys.stderr)
+            return EXIT_USAGE
         if not args.json:
             print(f"Generated educational sample PCAP at: {out_path} ({len(data)} bytes)")
         target_path = out_path
     elif args.file:
         target_path = args.file
     else:
-        print("Please provide a .pcap file path or use --sample")
-        return 1
+        print("Please provide a .pcap file path or use --sample", file=sys.stderr)
+        return EXIT_USAGE
 
-    with open(target_path, "rb") as f:
-        raw_pcap = f.read()
+    try:
+        with open(target_path, "rb") as f:
+            raw_pcap = f.read()
+    except OSError as e:
+        print(f"error: cannot read {target_path}: {e}", file=sys.stderr)
+        return EXIT_USAGE
 
-    packets = parse_pcap_packets(raw_pcap)
+    try:
+        packets = parse_pcap_packets(raw_pcap)
+    except PcapFormatError as e:
+        print(f"error: {target_path}: {e}", file=sys.stderr)
+        return EXIT_USAGE
     report = analyze_traffic(packets)
 
     if args.json:
@@ -269,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_scan = subparsers.add_parser("scan", help="Discover active devices on local network subnet")
     p_scan.add_argument("--subnet", type=str, help="Subnet CIDR (e.g. 192.168.1.0/24)")
-    p_scan.add_argument("--threads", type=int, default=40, help="Concurrent probe threads")
+    p_scan.add_argument("--threads", type=positive_int, default=40, help="Concurrent probe threads")
     p_scan.add_argument("--json", action="store_true", help="Output JSON format")
     p_scan.set_defaults(func=cmd_scan)
 
@@ -289,14 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ping = subparsers.add_parser("ping", help="Measure latency, packet loss, and jitter")
     p_ping.add_argument("target", type=str, help="Target IP or hostname")
-    p_ping.add_argument("-c", "--count", type=int, default=5, help="Number of probes")
+    p_ping.add_argument("-c", "--count", type=positive_int, default=5, help="Number of probes")
     p_ping.add_argument("-i", "--interval", type=float, default=0.1, help="Interval between probes")
     p_ping.add_argument("--json", action="store_true", help="Output JSON format")
     p_ping.set_defaults(func=cmd_ping)
 
     p_trace = subparsers.add_parser("trace", help="Hop-by-hop route latency tracing")
     p_trace.add_argument("target", type=str, help="Target destination")
-    p_trace.add_argument("--max-hops", type=int, default=20, help="Max hops")
+    p_trace.add_argument("--max-hops", type=positive_int, default=20, help="Max hops")
     p_trace.add_argument("--json", action="store_true", help="Output JSON format")
     p_trace.set_defaults(func=cmd_trace)
 
@@ -304,7 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pcap.add_argument("file", nargs="?", type=str, help="Path to .pcap capture")
     p_pcap.add_argument("--sample", action="store_true", help="Generate educational synthetic pcap")
     p_pcap.add_argument("--output", type=str, help="Output path when generating sample")
-    p_pcap.add_argument("--limit", type=int, default=15, help="Max packets to print")
+    p_pcap.add_argument("--limit", type=positive_int, default=15, help="Max packets to print")
     p_pcap.add_argument("--json", action="store_true", help="Output JSON format")
     p_pcap.set_defaults(func=cmd_pcap)
 

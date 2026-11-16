@@ -82,3 +82,33 @@ class TestDashboardAPI(unittest.TestCase):
         res = self.client.get("/api/trace?target=127.0.0.1&max_hops=2")
         self.assertEqual(res.status_code, 200)
         self.assertIsInstance(res.json(), list)
+
+
+class TestDashboardValidation(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app)
+
+    def test_invalid_port_spec_is_a_400(self):
+        res = self.client.get("/api/ports?host=127.0.0.1&ports=abc")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("invalid port", res.json()["detail"])
+
+    def test_out_of_range_port_is_a_400(self):
+        res = self.client.get("/api/ports?host=127.0.0.1&ports=70000")
+        self.assertEqual(res.status_code, 400)
+
+    def test_too_many_ports_is_a_400(self):
+        ports = ",".join(str(p) for p in range(1, 131))
+        res = self.client.get(f"/api/ports?host=127.0.0.1&ports={ports}")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("100 ports", res.json()["detail"])
+
+    def test_unknown_dns_type_is_a_400(self):
+        res = self.client.get("/api/dns?domain=example.com&type=FOO")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("unsupported DNS record type", res.json()["detail"])
+
+    def test_invalid_subnet_is_a_400(self):
+        res = self.client.get("/api/scan?subnet=nonsense")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("invalid subnet", res.json()["detail"])
