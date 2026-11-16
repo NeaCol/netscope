@@ -1,7 +1,22 @@
+import socket
+import time
 import unittest
-from netscope.scanner.discovery import lookup_vendor, probe_single_host
+from unittest import mock
+
+from netscope.scanner.discovery import (
+    _parse_arp_command_output,
+    _parse_ip_neigh_output,
+    _parse_proc_net_arp,
+    lookup_vendor,
+    normalize_mac,
+    probe_single_host,
+    read_system_arp_table,
+    resolve_hostname,
+    resolve_hostnames,
+    scan_subnet,
+)
 from netscope.scanner.interfaces import get_default_gateway_and_ip, get_primary_interface, list_interfaces
-from netscope.scanner.ports import check_port, scan_ports
+from netscope.scanner.ports import check_port, parse_port_spec, scan_ports
 
 
 class TestScanner(unittest.TestCase):
@@ -61,3 +76,132 @@ class TestScanner(unittest.TestCase):
         for ip, mac in table.items():
             self.assertFalse(mac.startswith("01:00:5E"))
             self.assertFalse(mac.startswith("FF:FF:FF"))
+
+
+class TestNeighborDiscovery(unittest.TestCase):
+    def test_normalize_mac_variants(self):
+        expected = "00:1F:6D:9A:33:54"
+        for raw in ("00:1f:6d:9a:33:54", "0:1f:6d:9a:33:54", "00-1F-6D-9A-33-54", "001f.6d9a.3354"):
+            self.assertEqual(normalize_mac(raw), expected, raw)
+        for bad in (None, "", "not-a-mac", "00:1f:6d:9a:33", "00:1f:6d:9a:33:54:66"):
+            self.assertIsNone(normalize_mac(bad), bad)
+
+    def test_vendor_lookup_accepts_bsd_style_macs(self):
+        # macOS prints single-digit octets: without normalization every Apple
+        # and VMware host on the LAN was reported as "Standard Network Device".
+        self.assertEqual(lookup_vendor("0:c:29:4b:82:11"), "VMware")
+        self.assertEqual(lookup_vendor("b8:27:eb:1:2:3"), "Raspberry Pi Foundation")
+        self.assertEqual(lookup_vendor("00-0C-29-4B-82-11"), "VMware")
+
+    def test_arp_output_net_tools(self):
+        text = (
+            "? (192.168.1.1) at 00:1f:6d:9a:33:54 [ether] on eth0\n"
+            "? (192.168.1.77) at <incomplete> on eth0\n"
+        )
+        self.assertEqual(_parse_arp_command_output(text), {"192.168.1.1": "00:1F:6D:9A:33:54"})
+
+    def test_arp_output_bsd(self):
+        text = (
+            "? (192.168.1.1) at 0:1f:6d:9a:33:54 on en0 ifscope [ethernet]\n"
+            "? (192.168.1.50) at bc:d0:74:1:2:33 on en0 ifscope [ethernet]\n"
+        )
+        self.assertEqual(
+            _parse_arp_command_output(text),
+            {"192.168.1.1": "00:1F:6D:9A:33:54", "192.168.1.50": "BC:D0:74:01:02:33"},
+        )
+
+    def test_arp_output_windows(self):
+        text = (
+            "Interface: 192.168.1.50 --- 0x5\n"
+            "  Internet Address      Physical Address      Type\n"
+            "  192.168.1.1           00-1f-6d-9a-33-54     dynamic\n"
+        )
+        self.assertEqual(_parse_arp_command_output(text), {"192.168.1.1": "00:1F:6D:9A:33:54"})
+
+    def test_proc_net_arp_skips_incomplete_entries(self):
+        text = (
+            "IP address       HW type     Flags       HW address            Mask     Device\n"
+            "192.168.1.1      0x1         0x2         00:1f:6d:9a:33:54     *        eth0\n"
+            "192.168.1.99     0x1         0x0         00:00:00:00:00:00     *        eth0\n"
+        )
+        self.assertEqual(_parse_proc_net_arp(text), {"192.168.1.1": "00:1F:6D:9A:33:54"})
+
+    def test_ip_neigh_parsing(self):
+        text = (
+            "192.168.1.1 dev eth0 lladdr 00:1f:6d:9a:33:54 REACHABLE\n"
+            "192.168.1.8 dev eth0  FAILED\n"
+            "192.168.1.9 dev eth0 lladdr bc:d0:74:01:02:33 STALE\n"
+        )
+        self.assertEqual(
+            _parse_ip_neigh_output(text),
+            {"192.168.1.1": "00:1F:6D:9A:33:54", "192.168.1.9": "BC:D0:74:01:02:33"},
+        )
+
+    def test_table_falls_back_when_arp_binary_is_missing(self):
+        neigh = "192.168.1.1 dev eth0 lladdr 00:1f:6d:9a:33:54 REACHABLE\n"
+
+        def fake_check_output(cmd, *args, **kwargs):
+            if cmd[0] == "arp":
+                raise FileNotFoundError("arp not installed")
+            return neigh
+
+        with mock.patch("subprocess.check_output", fake_check_output):
+            self.assertEqual(read_system_arp_table(), {"192.168.1.1": "00:1F:6D:9A:33:54"})
+
+    def test_reverse_dns_timeout_is_enforced(self):
+        def slow_lookup(_ip):
+            time.sleep(2.0)
+            return ("slow.example", [], ["10.0.0.9"])
+
+        with mock.patch("socket.gethostbyaddr", slow_lookup):
+            started = time.perf_counter()
+            result = resolve_hostname("10.0.0.9", timeout=0.2)
+            elapsed = time.perf_counter() - started
+        self.assertIsNone(result)
+        self.assertLess(elapsed, 1.0, "the reverse lookup timeout was not honoured")
+
+    def test_resolve_hostnames_returns_names(self):
+        names = {"10.0.0.1": "router.lan", "10.0.0.2": "nas.lan"}
+
+        def fake_lookup(ip):
+            if ip in names:
+                return (names[ip], [], [ip])
+            raise socket.herror("unknown host")
+
+        with mock.patch("socket.gethostbyaddr", fake_lookup):
+            result = resolve_hostnames(["10.0.0.1", "10.0.0.2", "10.0.0.3"], timeout=0.5)
+        self.assertEqual(result, {"10.0.0.1": "router.lan", "10.0.0.2": "nas.lan", "10.0.0.3": None})
+
+    def test_scan_subnet_rejects_zero_threads(self):
+        with self.assertRaises(ValueError):
+            scan_subnet(cidr="192.168.1.0/30", max_threads=0)
+
+    def test_scan_subnet_rejects_invalid_explicit_cidr(self):
+        # Silently scanning 192.168.1.0/24 instead reported another network's
+        # hosts as if they were the requested subnet.
+        with self.assertRaises(ValueError):
+            scan_subnet(cidr="not-a-subnet")
+
+
+class TestPortSpec(unittest.TestCase):
+    def test_parses_lists_and_ranges(self):
+        self.assertEqual(parse_port_spec("80,443"), [80, 443])
+        self.assertEqual(parse_port_spec("22, 80-82"), [22, 80, 81, 82])
+        self.assertEqual(parse_port_spec("80,80,80"), [80])
+
+    def test_empty_spec_means_default(self):
+        self.assertIsNone(parse_port_spec(None))
+        self.assertIsNone(parse_port_spec("   "))
+
+    def test_rejects_bad_tokens(self):
+        for bad in ("abc", "80,abc", "70000", "0", "80-", "90-80", "-1"):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_port_spec(bad)
+
+    def test_check_port_rejects_out_of_range(self):
+        with self.assertRaises(ValueError):
+            check_port("127.0.0.1", 70000, timeout=0.05)
+
+    def test_scan_ports_rejects_zero_threads(self):
+        with self.assertRaises(ValueError):
+            scan_ports("127.0.0.1", ports=[80], max_threads=0)

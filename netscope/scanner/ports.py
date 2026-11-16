@@ -41,7 +41,56 @@ class PortScanResult:
         return asdict(self)
 
 
+def parse_port_spec(spec: Optional[str]) -> Optional[List[int]]:
+    """Parse ``"80,443,8000-8002"`` into a validated port list.
+
+    Returns ``None`` for an empty/absent spec so callers keep their "default
+    port list" behaviour.  Anything that cannot be turned into 1..65535 ports
+    raises ``ValueError`` - silently dropping the bad tokens, as the CLI and
+    the dashboard used to do, turns ``-p abc`` into a scan of nothing that
+    reports "No open ports detected" with exit code 0.
+    """
+    if spec is None:
+        return None
+    text = spec.strip()
+    if not text:
+        return None
+
+    ports: List[int] = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            bounds = token.split("-")
+            if len(bounds) != 2:
+                raise ValueError(f"invalid port range {token!r}")
+            try:
+                start, end = int(bounds[0]), int(bounds[1])
+            except ValueError:
+                raise ValueError(f"invalid port range {token!r}") from None
+            if start > end:
+                raise ValueError(f"invalid port range {token!r}: start is greater than end")
+            candidates = range(start, end + 1)
+        else:
+            try:
+                candidates = [int(token)]
+            except ValueError:
+                raise ValueError(f"invalid port {token!r}") from None
+        for port in candidates:
+            if not 1 <= port <= 65535:
+                raise ValueError(f"port {port} is outside the valid range 1-65535")
+            if port not in ports:
+                ports.append(port)
+
+    if not ports:
+        raise ValueError(f"no valid ports in {spec!r}")
+    return ports
+
+
 def check_port(host: str, port: int, timeout: float = 0.5) -> PortScanResult:
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port {port} is outside the valid range 1-65535")
     service = WELL_KNOWN_PORTS.get(port, "Unknown")
     banner = None
     try:
@@ -63,13 +112,23 @@ def check_port(host: str, port: int, timeout: float = 0.5) -> PortScanResult:
 
 
 def scan_ports(host: str, ports: Optional[List[int]] = None, timeout: float = 0.4, max_threads: int = 20) -> List[PortScanResult]:
+    if max_threads < 1:
+        raise ValueError(f"max_threads must be >= 1, got {max_threads}")
+    if timeout <= 0:
+        raise ValueError(f"timeout must be > 0, got {timeout}")
     target_ports = ports if ports is not None else list(WELL_KNOWN_PORTS.keys())
+    for port in target_ports:
+        if not 1 <= port <= 65535:
+            raise ValueError(f"port {port} is outside the valid range 1-65535")
     results: List[PortScanResult] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = {executor.submit(check_port, host, p, timeout): p for p in target_ports}
         for future in concurrent.futures.as_completed(futures):
-            res = future.result()
+            try:
+                res = future.result()
+            except Exception:
+                continue
             if res.is_open:
                 results.append(res)
 
